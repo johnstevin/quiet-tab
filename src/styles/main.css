@@ -457,43 +457,6 @@
   transform: rotate(90deg);
 }
 
-/* Segmented control — the native idiom for a short exclusive choice, and 66px
-   shorter than three radio rows. */
-.menu__segment {
-  display: flex;
-  gap: 2px;
-  margin: 2px 8px 7px;
-  padding: 2px;
-  border-radius: 9px;
-  background: rgba(255, 255, 255, 0.09);
-}
-
-.menu__segment-item {
-  flex: 1;
-  padding: 6px 4px;
-  border: 0;
-  border-radius: 7px;
-  background: transparent;
-  color: rgba(255, 255, 255, 0.66);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-  transition:
-    background 160ms ease,
-    color 160ms ease;
-}
-
-.menu__segment-item:hover:not(.is-on) {
-  color: #fff;
-}
-
-.menu__segment-item.is-on {
-  background: rgba(255, 255, 255, 0.92);
-  color: #16191e;
-  font-weight: 500;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.28);
-}
-
 /* City picker, revealed under "天气位置". */
 .menu__panel {
   padding: 1px 8px 7px;
@@ -696,6 +659,10 @@
 }
 /* ═════════════════════════════════════════════════════════════════════════════
    SEARCH
+   Structure modelled on google.com, visual language kept from this page:
+   the bar and the suggestion list read as ONE surface, rows carry
+   type-specific leading icons, and the engine picker sits at the right-hand
+   end of the bar.
    ═════════════════════════════════════════════════════════════════════════════ */
 
 .search {
@@ -706,12 +673,15 @@
 }
 
 .search__bar {
+  position: relative;
+  /* Above .search__drop, so the engine popover (a descendant) also paints over
+     the list rather than behind it. */
+  z-index: 2;
   display: flex;
   align-items: center;
   gap: 10px;
   height: 48px;
-  padding: 0 14px;
-  /* Full pill. */
+  padding: 0 8px 0 14px;
   border-radius: 24px;
   background: rgba(22, 25, 30, 0.5);
   backdrop-filter: blur(22px) saturate(150%);
@@ -719,25 +689,39 @@
   box-shadow:
     0 10px 34px rgba(0, 0, 0, 0.3),
     inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  /* Deliberately NO transform on focus. The list below is positioned against
+     `.search`, not against this (potentially transformed) element, so even a
+     1px nudge here cancels the -1px overlap that merges the two surfaces —
+     turning the hairline seam into a 2px double border. The 10vh lift of the
+     whole column already supplies the focus feedback. */
   transition:
     background 200ms ease,
     border-color 200ms ease,
-    box-shadow 200ms ease,
-    transform 220ms cubic-bezier(0.16, 1, 0.3, 1);
+    box-shadow 200ms ease;
 }
 
 .search.is-focused .search__bar {
-  background: rgba(26, 30, 36, 0.7);
+  background: rgba(26, 30, 36, 0.72);
   border-color: rgba(255, 255, 255, 0.22);
   box-shadow:
     0 16px 48px rgba(0, 0, 0, 0.42),
     inset 0 1px 0 rgba(255, 255, 255, 0.09);
-  transform: translateY(-1px);
 }
 
+/* Open: square off the underside so bar and list form a single panel. The drop
+   shadow moves to the list, otherwise it would draw a line across the seam. */
+.search.is-open .search__bar {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.09);
+}
+
+/* 18px slot + 10px gap + 14px padding puts the input text on the same axis as
+   every suggestion row's text. */
 .search__glyph {
   display: flex;
-  flex: 0 0 auto;
+  flex: 0 0 18px;
+  justify-content: center;
   color: rgba(255, 255, 255, 0.5);
   transition: color 200ms ease;
 }
@@ -781,33 +765,128 @@
   background: rgba(255, 255, 255, 0.24);
 }
 
+/* ── engine picker ────────────────────────────────────────────────────────── */
+
+.search__engine {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.search__engine-btn {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  height: 32px;
+  padding: 0 7px 0 11px;
+  border: 0;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.82);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition:
+    background 160ms ease,
+    color 160ms ease;
+}
+
+.search__engine-btn:hover {
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+}
+
+.search__engine-chevron {
+  display: flex;
+  opacity: 0.6;
+  transition: transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.search__engine-chevron[data-open='yes'] {
+  transform: rotate(180deg);
+}
+
+.search__engine-menu {
+  position: absolute;
+  top: calc(100% + 9px);
+  right: 0;
+  z-index: 3;
+  min-width: 156px;
+  margin: 0;
+  padding: 5px;
+  list-style: none;
+  border-radius: 12px;
+  background: rgba(23, 26, 31, 0.92);
+  backdrop-filter: blur(20px) saturate(150%);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.5);
+  animation: drop-in 140ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.search__engine-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.86);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.search__engine-item:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.search__engine-item.is-on {
+  color: #fff;
+}
+
+.search__engine-item-check {
+  display: flex;
+  flex: 0 0 auto;
+}
+
+/* ── suggestion list ─────────────────────────────────────────────────────── */
+
 .search__drop {
   position: absolute;
-  top: calc(100% + 8px);
+  /* Overlap the bar's bottom border by 1px, so the seam is ONE hairline — this
+     list's own top border — instead of two stacked borders. */
+  top: calc(100% - 1px);
   right: 0;
   left: 0;
+  z-index: 1;
   margin: 0;
-  padding: 6px;
+  padding: 6px 0 8px;
   list-style: none;
-  /* Backstop for short windows, where even the lifted column cannot fit the
-     whole list. Normally never reached. */
-  max-height: min(46vh, 340px);
+  /* Capped to the space actually left under the bar, measured in SearchBox and
+     passed in as --drop-max. A fixed value cannot work: the full nine-row list
+     clears the fold with 7px to spare at 1440x900, but would overflow a
+     768px-tall window by ~76px. The literal fallback only applies for the one
+     frame before the first measurement lands. */
+  max-height: var(--drop-max, 430px);
   overflow-y: auto;
   overscroll-behavior: contain;
-  border-radius: 15px;
-  background: rgba(22, 25, 30, 0.82);
+  /* Matches the focused bar exactly so the two surfaces are indistinguishable. */
+  background: rgba(26, 30, 36, 0.72);
   backdrop-filter: blur(22px) saturate(150%);
-  border: 1px solid rgba(255, 255, 255, 0.11);
-  box-shadow:
-    0 18px 52px rgba(0, 0, 0, 0.5),
-    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-top-color: rgba(255, 255, 255, 0.1);
+  border-radius: 0 0 24px 24px;
+  box-shadow: 0 20px 52px rgba(0, 0, 0, 0.46);
   animation: drop-in 150ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 @keyframes drop-in {
   from {
     opacity: 0;
-    transform: translateY(-6px) scale(0.99);
+    transform: translateY(-6px);
   }
   to {
     opacity: 1;
@@ -815,30 +894,43 @@
   }
 }
 
+/* Full-bleed rows, as in a browser address bar; the list's own radius clips the
+   highlight at the rounded bottom corners. */
 .search__row {
   display: flex;
   align-items: center;
-  gap: 11px;
+  gap: 10px;
   width: 100%;
-  padding: 9px 11px;
+  padding: 9px 14px;
   border: 0;
-  border-radius: 9px;
   background: transparent;
   color: rgba(255, 255, 255, 0.9);
   font: inherit;
   font-size: 14px;
+  line-height: 1.35;
   text-align: left;
   cursor: pointer;
 }
 
 .search__row.is-active {
-  background: rgba(255, 255, 255, 0.11);
+  background: rgba(255, 255, 255, 0.1);
 }
 
 .search__row-glyph {
   display: flex;
-  flex: 0 0 auto;
-  color: rgba(255, 255, 255, 0.4);
+  flex: 0 0 18px;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.42);
+}
+
+/* Type-specific tinting. The kinds come from real data: Google's
+   `google:suggesttype` array, or a URL parse for the other providers. */
+.search__row[data-kind='history'] .search__row-glyph {
+  color: rgba(255, 255, 255, 0.56);
+}
+
+.search__row[data-kind='navigation'] .search__row-glyph {
+  color: rgba(167, 199, 255, 0.82);
 }
 
 .search__row-glyph--ai {
@@ -871,9 +963,10 @@
 
 .search__drop-sep {
   height: 1px;
-  margin: 5px 6px;
+  margin: 5px 14px;
   background: rgba(255, 255, 255, 0.1);
 }
+
 /* ═════════════════════════════════════════════════════════════════════════════
    ATTRIBUTION
    Required by the Unsplash API Guidelines; rendered only for Unsplash photos.

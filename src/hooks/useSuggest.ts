@@ -1,6 +1,8 @@
+import { useEffect, useMemo, useState } from 'react'
 import { isExtensionRuntime } from '../lib/env'
-import { ENGINES, fetchSuggestions } from '../lib/search'
-import { useEffect, useState } from 'react'
+import { matchHistory, readHistory } from '../lib/history'
+import { ENGINES, HISTORY_LIMIT, TOTAL_ROWS_MAX, fetchSuggestions } from '../lib/search'
+import type { Suggestion } from '../lib/search'
 import type { EngineId } from '../lib/types'
 
 /**
@@ -12,19 +14,47 @@ import type { EngineId } from '../lib/types'
 const DEBOUNCE_MS = 140
 
 /**
- * Live search suggestions for `query`.
+ * Dropdown rows: local history first, then live suggestions.
+ *
+ * Ordering follows what a browser address bar does — your own past searches
+ * outrank a stranger's guesses at what you meant.
  *
  * Returns an empty list rather than throwing: suggestions are a convenience,
  * and the endpoints are undocumented enough that failures should be invisible.
  */
-export function useSuggest(query: string, engine: EngineId, enabled: boolean): string[] {
-  const [items, setItems] = useState<string[]>([])
+export function useSuggest(
+  query: string,
+  engine: EngineId,
+  enabled: boolean,
+  keepHistory: boolean,
+): Suggestion[] {
+  const [history, setHistory] = useState<string[]>([])
+  const [remote, setRemote] = useState<Suggestion[]>([])
+
+  // Re-read history each time the box opens, so a search made in another tab
+  // shows up here without a reload.
+  useEffect(() => {
+    if (!enabled || !keepHistory) {
+      setHistory([])
+      return
+    }
+
+    let alive = true
+    void (async () => {
+      const list = await readHistory()
+      if (alive) setHistory(list)
+    })()
+
+    return () => {
+      alive = false
+    }
+  }, [enabled, keepHistory])
 
   useEffect(() => {
     const text = query.trim()
 
     if (!enabled || text.length === 0) {
-      setItems([])
+      setRemote([])
       return
     }
 
@@ -32,7 +62,7 @@ export function useSuggest(query: string, engine: EngineId, enabled: boolean): s
     // extension page holding host_permissions. Skip quietly on the dev server
     // instead of filling the console with failed requests.
     if (!isExtensionRuntime()) {
-      setItems([])
+      setRemote([])
       return
     }
 
@@ -41,7 +71,7 @@ export function useSuggest(query: string, engine: EngineId, enabled: boolean): s
       void (async () => {
         try {
           const list = await fetchSuggestions(ENGINES[engine], text, controller.signal)
-          if (!controller.signal.aborted) setItems(list)
+          if (!controller.signal.aborted) setRemote(list)
         } catch {
           // Aborted, offline, throttled, or the response shape changed.
         }
@@ -54,5 +84,21 @@ export function useSuggest(query: string, engine: EngineId, enabled: boolean): s
     }
   }, [query, engine, enabled])
 
-  return items
+  return useMemo(() => {
+    const matched = matchHistory(history, query, HISTORY_LIMIT)
+    const seen = new Set(matched.map((text) => text.toLowerCase()))
+
+    const rows: Suggestion[] = matched.map((text) => ({ text, kind: 'history' }))
+
+    for (const item of remote) {
+      if (rows.length >= TOTAL_ROWS_MAX) break
+      const key = item.text.toLowerCase()
+      // A term that is already a history row would otherwise appear twice.
+      if (seen.has(key)) continue
+      seen.add(key)
+      rows.push(item)
+    }
+
+    return rows
+  }, [history, remote, query])
 }

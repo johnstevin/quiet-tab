@@ -43,6 +43,12 @@ export type Settings = {
   showSearch: boolean
   /** Which engine the search box queries. */
   engine: EngineId
+  /**
+   * Record searches locally so the dropdown can offer them back.
+   *
+   * When false nothing is written at all, rather than written-but-hidden.
+   */
+  keepHistory: boolean
   /** Show the weather line. */
   showWeather: boolean
   /**
@@ -59,6 +65,7 @@ export const DEFAULT_SETTINGS: Settings = {
   showSeconds: true,
   showSearch: true,
   engine: 'google',
+  keepHistory: true,
   showWeather: true,
   place: null,
 }

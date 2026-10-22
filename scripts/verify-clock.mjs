@@ -376,36 +376,58 @@ async function runUiChecks(browser, url) {
   // The AI row depends only on there being a query, so it shows even here where
   // the suggestion endpoints are unreachable (no CORS off-extension).
   await page.locator('.search__input').fill('chrome extension')
-  await page.waitForTimeout(260)
+  await page.waitForTimeout(280)
   const aiRow = await page.evaluate(() => {
-    const row = document.querySelector('.search__row--ai')
+    const rows = Array.from(document.querySelectorAll('.search__row'))
+    const first = rows[0]
+    const bar = document.querySelector('.search__bar')
+    const drop = document.querySelector('.search__drop')
+    const barBox = bar?.getBoundingClientRect()
+    const dropBox = drop?.getBoundingClientRect()
+    const barStyle = bar ? getComputedStyle(bar) : null
     return {
-      present: Boolean(row),
-      text: row?.textContent?.replace(/\s+/g, ' ').trim() ?? null,
+      total: rows.length,
+      // The AI row must be pinned FIRST, not appended last.
+      firstIsAi: first?.classList.contains('search__row--ai') ?? false,
+      text: first?.textContent?.replace(/\s+/g, ' ').trim() ?? null,
+      // Bar and list should read as one surface: the list overlaps the bar's
+      // bottom border by 1px and matches its width exactly, and the bar drops
+      // its bottom radius while open.
+      seam: barBox && dropBox ? Math.round((dropBox.top - barBox.bottom) * 100) / 100 : null,
+      sameWidth:
+        barBox && dropBox ? Math.round(barBox.width) === Math.round(dropBox.width) : null,
+      barBottomRadius: barStyle?.borderBottomLeftRadius ?? null,
     }
   })
+
+  /* ── engine picker, now inside the bar ───────────────────────────────────── */
+  await page.locator('.search__engine-btn').click()
+  await page.waitForSelector('.search__engine-menu', { timeout: 6000 })
+  const engineItems = await page.$$eval('.search__engine-item-text', (els) =>
+    els.map((e) => e.textContent.trim()),
+  )
 
   // Bing exposes no AI-Mode equivalent, so the row must disappear for it. This
   // is the negative half of the assertion — without it, a row that is always
   // rendered would pass the test above.
-  await openMenu()
-  await page.locator('.menu__segment-item', { hasText: 'Bing' }).first().click()
-  await page.keyboard.press('Escape')
+  await page.locator('.search__engine-item', { hasText: 'Bing' }).first().click()
+  await page.waitForTimeout(320)
   await page.locator('.search__input').fill('chrome extension')
-  await page.waitForTimeout(260)
+  await page.waitForTimeout(280)
   const bingProbe = await page.evaluate(() => ({
     aiRow: Boolean(document.querySelector('.search__row--ai')),
     placeholder: document.querySelector('.search__input')?.getAttribute('placeholder') ?? null,
-    // Read the engine from storage, not the DOM: the segmented control only
-    // exists while the menu is open, and we closed it to type in the box.
+    pickerLabel: document.querySelector('.search__engine-name')?.textContent?.trim() ?? null,
     engine: JSON.parse(localStorage.getItem('settings') ?? '{}').engine ?? null,
   }))
 
-  await openMenu()
-  await page.locator('.menu__segment-item', { hasText: 'Google' }).first().click()
-  await page.keyboard.press('Escape')
+  // Back to Google for the screenshot.
+  await page.locator('.search__engine-btn').click()
+  await page.waitForSelector('.search__engine-menu', { timeout: 6000 })
+  await page.locator('.search__engine-item', { hasText: 'Google' }).first().click()
+  await page.waitForTimeout(320)
   await page.locator('.search__input').fill('chrome ext')
-  await page.waitForTimeout(260)
+  await page.waitForTimeout(280)
   await page.screenshot({ path: join(OUT, 'search-open.png') })
 
   // Visibility toggles.
@@ -418,14 +440,54 @@ async function runUiChecks(browser, url) {
   await page.waitForTimeout(160)
   const searchRestored = (await page.locator('.search').count()) === 1
 
+  // Read the labels while the menu is still open — it stays open after a live
+  // setting is toggled, and the Escape below closes it.
   const menuLabels = await page.$$eval('.menu__item .menu__text', (els) =>
-    els.map((e) => e.textContent.trim()),
-  )
-  const segments = await page.$$eval('.menu__segment-item', (els) =>
     els.map((e) => e.textContent.trim()),
   )
 
   await page.keyboard.press('Escape')
+
+  /* ── dropdown cap across viewport sizes ──────────────────────────────────── */
+  // A single-size check cannot catch this: the full list clears the fold with
+  // 7px to spare at 1440x900 and overflows a 720px-tall window by ~76px, so the
+  // cap has to be measured, not hard-coded.
+  const caps = []
+  for (const size of [
+    { width: 1440, height: 900 },
+    { width: 1280, height: 720 },
+    { width: 1366, height: 768 },
+  ]) {
+    await page.setViewportSize(size)
+    await page.locator('.search__input').click()
+    await page.locator('.search__input').fill('chrome extension')
+    // Covers the 320ms re-measure that runs once the column has finished
+    // lifting.
+    await page.waitForTimeout(600)
+
+    const probe = await page.evaluate(() => {
+      const search = document.querySelector('.search')
+      const bar = document.querySelector('.search__bar')
+      const drop = document.querySelector('.search__drop')
+      if (!search || !bar || !drop) return null
+      const barBox = bar.getBoundingClientRect()
+      const dropBox = drop.getBoundingClientRect()
+      return {
+        viewport: window.innerHeight,
+        barBottom: Math.round(barBox.bottom),
+        declared: getComputedStyle(search).getPropertyValue('--drop-max').trim(),
+        maxHeight: Math.round(parseFloat(getComputedStyle(drop).maxHeight)),
+        dropBottom: Math.round(dropBox.bottom),
+        // 16px of breathing room above the fold, matching SearchBox's GAP.
+        expected: Math.max(140, Math.round(window.innerHeight - barBox.bottom - 16)),
+      }
+    })
+
+    caps.push({ size: `${size.width}x${size.height}`, ...probe })
+    await page.locator('.search__input').fill('')
+    await page.keyboard.press('Escape')
+  }
+  await page.setViewportSize({ width: 1440, height: 900 })
 
   /* ── weather, end to end ─────────────────────────────────────────────────── */
   // This is a REAL network check. Open-Meteo answers with
@@ -484,7 +546,8 @@ async function runUiChecks(browser, url) {
     searchHidden,
     searchRestored,
     menuLabels,
-    segments,
+    engineItems,
+    caps,
     weather,
     consoleErrors,
   }
@@ -816,23 +879,42 @@ async function runStatic() {
   /* ── search + weather ────────────────────────────────────────────────────── */
   console.log('\nSEARCH & WEATHER')
 
-  const expectedMenu = ['上一张', '下一张', 'Unsplash', 'Bing 每日', '搜索框', '天气', '显示秒', '天气位置']
+  const expectedMenu = [
+    '上一张',
+    '下一张',
+    'Unsplash',
+    'Bing 每日',
+    '搜索框',
+    '天气',
+    '显示秒',
+    '记录搜索历史',
+    '清空搜索历史',
+    '天气位置',
+  ]
   const absent = expectedMenu.filter((label) => !ui.menuLabels.includes(label))
   if (absent.length === 0) pass(`menu exposes all ${expectedMenu.length} expected entries`)
   else fail(`menu is missing: ${absent.join(', ')}`)
 
-  if (ui.segments.join('/') === 'Google/Bing/DDG') {
-    pass('engine segmented control offers Google / Bing / DDG')
+  // The engine picker moved out of the menu and into the bar, so the menu must
+  // no longer carry a duplicate control for it.
+  if (!ui.menuLabels.some((l) => ['Google', 'DDG', 'DuckDuckGo'].includes(l))) {
+    pass('engine control is not duplicated in the context menu')
   } else {
-    fail(`engine segments are ${ui.segments.join('/')}, expected Google/Bing/DDG`)
+    fail('context menu still carries an engine control; it belongs in the bar now')
+  }
+
+  if (ui.engineItems.join('/') === 'Google/Bing/DuckDuckGo') {
+    pass(`engine picker in the bar offers ${ui.engineItems.join(' / ')}`)
+  } else {
+    fail(`engine picker lists ${ui.engineItems.join('/')}, expected Google/Bing/DuckDuckGo`)
   }
 
   if (!ui.searchBar) {
     fail('search box did not render')
   } else {
     const { width, height, radius, placeholder } = ui.searchBar
-    if (radius === `${Math.round(height / 2)}px` || parseFloat(radius) >= height / 2 - 1) {
-      pass(`search bar is a full pill (${width}x${height}, radius ${radius})`)
+    if (parseFloat(radius) >= height / 2 - 1) {
+      pass(`search bar is a full pill when closed (${width}x${height}, radius ${radius})`)
     } else {
       fail(`search bar radius ${radius} does not make a pill at height ${height}`)
     }
@@ -862,13 +944,22 @@ async function runStatic() {
     )
   }
 
-  if (ui.aiRow.present && ui.aiRow.text?.includes('chrome extension')) {
-    pass(`AI-mode handoff row present for Google: "${ui.aiRow.text}"`)
+  if (ui.aiRow.firstIsAi && ui.aiRow.text?.includes('chrome extension')) {
+    pass(`AI-mode row is pinned FIRST: "${ui.aiRow.text}"`)
   } else {
-    fail(`AI-mode row missing or wrong for Google (${JSON.stringify(ui.aiRow)})`)
+    fail(`AI-mode row is not the first row (${JSON.stringify(ui.aiRow)})`)
   }
 
-  // The negative half: without this, a permanently rendered row would pass.
+  // Joined surface: 1px overlap, equal width, squared-off bar underside.
+  if (ui.aiRow.seam === -1 && ui.aiRow.sameWidth && ui.aiRow.barBottomRadius === '0px') {
+    pass('bar and list form one surface (1px seam, equal width, squared underside)')
+  } else {
+    fail(
+      `bar and list are not joined: seam=${ui.aiRow.seam}px ` +
+        `sameWidth=${ui.aiRow.sameWidth} barBottomRadius=${ui.aiRow.barBottomRadius}`,
+    )
+  }
+
   if (ui.bingProbe.engine === 'bing' && ui.bingProbe.aiRow === false) {
     pass('AI-mode row correctly absent for Bing, which has no equivalent')
   } else {
@@ -878,16 +969,41 @@ async function runStatic() {
     )
   }
 
-  if (ui.bingProbe.placeholder?.includes('Bing')) {
-    pass('placeholder follows the selected engine')
+  if (ui.bingProbe.placeholder?.includes('Bing') && ui.bingProbe.pickerLabel === 'Bing') {
+    pass('placeholder and picker label both follow the engine switch')
   } else {
-    fail(`placeholder did not follow the engine switch: "${ui.bingProbe.placeholder}"`)
+    fail(
+      `engine switch not reflected in the bar ` +
+        `(placeholder="${ui.bingProbe.placeholder}" label="${ui.bingProbe.pickerLabel}")`,
+    )
   }
 
   if (ui.searchHidden && ui.searchRestored) {
     pass('"搜索框" toggle removes and restores the search box')
   } else {
     fail(`search toggle broken (hidden=${ui.searchHidden} restored=${ui.searchRestored})`)
+  }
+
+  const badCaps = ui.caps.filter((c) => !c || Math.abs(c.maxHeight - c.expected) > 1)
+  if (badCaps.length === 0) {
+    pass(
+      'dropdown cap tracks the real gap under the bar at ' +
+        ui.caps.map((c) => `${c.size}->${c.maxHeight}px`).join(', '),
+    )
+  } else {
+    const b = badCaps[0]
+    fail(
+      `dropdown cap wrong at ${b?.size}: max-height ${b?.maxHeight}px but only ` +
+        `${b?.expected}px of room (bar bottom ${b?.barBottom} of ${b?.viewport})`,
+    )
+  }
+
+  const cappedOverflow = ui.caps.filter((c) => c && c.dropBottom > c.viewport)
+  if (cappedOverflow.length === 0) {
+    pass(`dropdown stays above the fold at all ${ui.caps.length} viewport sizes tested`)
+  } else {
+    const b = cappedOverflow[0]
+    fail(`dropdown overflows at ${b?.size}: bottom ${b?.dropBottom} vs viewport ${b?.viewport}`)
   }
 
   if (ui.weather?.error) {
@@ -948,12 +1064,17 @@ async function runExtension() {
   const cspViolations = []
   const consoleErrors = []
   const hits = { bing: 0, unsplashApi: 0, unsplashImg: 0 }
+  /** Direct evidence that the Unsplash download-report endpoint was called. */
+  let downloadPings = 0
 
   context.on('request', (req) => {
     const u = req.url()
     if (u.includes('bing.com')) hits.bing += 1
-    else if (u.includes('api.unsplash.com')) hits.unsplashApi += 1
-    else if (u.includes('images.unsplash.com')) hits.unsplashImg += 1
+    else if (u.includes('api.unsplash.com')) {
+      hits.unsplashApi += 1
+      // e.g. https://api.unsplash.com/photos/<id>/download?ixid=...
+      if (u.includes('/download')) downloadPings += 1
+    } else if (u.includes('images.unsplash.com')) hits.unsplashImg += 1
   })
 
   /** Wait until a real photo has faded in on top of the bundled fallback. */
@@ -1069,25 +1190,33 @@ async function runExtension() {
       fail(`attribution missing — required by Unsplash API Terms (got ${state.creditText})`)
     }
 
-    // The ping is fire-and-forget and races the photo's fade-in, so poll for it
-    // rather than sampling once. This is a hard requirement of the Unsplash API
-    // Guidelines, not a nicety, so it is a failure rather than a note.
-    try {
-      await page.waitForFunction(
-        async () => {
-          const bag = await chrome.storage.local.get('pingedPhotoIds')
-          return (bag.pingedPhotoIds ?? []).length > 0
-        },
-        null,
-        { timeout: 15_000 },
-      )
-      const pinged = await page.evaluate(async () => {
+    // The ping is fire-and-forget and races the photo's fade-in, so poll for it.
+    // This is a hard requirement of the Unsplash API Guidelines, not a nicety,
+    // so it is a failure rather than a note.
+    //
+    // Polled with an explicit loop rather than page.waitForFunction: an async
+    // predicate there returns a Promise, which is itself truthy, so the wait
+    // resolved instantly and the assertion passed while reporting zero pings.
+    let pingedCount = 0
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      pingedCount = await page.evaluate(async () => {
         const bag = await chrome.storage.local.get('pingedPhotoIds')
-        return (bag.pingedPhotoIds ?? []).length
+        return Array.isArray(bag.pingedPhotoIds) ? bag.pingedPhotoIds.length : 0
       })
-      pass(`download_location pinged for ${pinged} photo(s) — Unsplash requirement met`)
-    } catch {
-      fail('download_location was never pinged — required by the Unsplash API Guidelines')
+      if (pingedCount > 0) break
+      await page.waitForTimeout(500)
+    }
+
+    if (pingedCount > 0 && downloadPings > 0) {
+      pass(
+        `download_location pinged: ${downloadPings} request(s) sent, ${pingedCount} photo(s) ` +
+          'recorded — Unsplash requirement met',
+      )
+    } else {
+      fail(
+        'download_location was never pinged — required by the Unsplash API Guidelines ' +
+          `(requests=${downloadPings} recorded=${pingedCount})`,
+      )
     }
 
     /* ── live search suggestions ───────────────────────────────────────────── */
@@ -1102,33 +1231,88 @@ async function runExtension() {
     }
     context.on('request', countSuggest)
 
-    await page.locator('.search__input').fill('chrome ext')
+    // Seed local history so the clock-icon rows have real data, then blur and
+    // re-focus — useSuggest re-reads history whenever the box opens.
+    await page.evaluate(async () => {
+      await chrome.storage.local.set({
+        searchHistory: ['chrome extension manifest v3', 'chrome devtools network'],
+      })
+    })
+    await page.mouse.click(240, 180)
+    await page.locator('.search__input').click()
+    await page.locator('.search__input').fill('chrome')
+
     try {
-      await page.waitForSelector('.search__row:not(.search__row--ai)', { timeout: 12_000 })
+      // Wait for a REMOTE row specifically. Waiting on `[data-kind]` would be
+      // satisfied instantly by the locally-seeded history rows, so the network
+      // round-trip would never actually be awaited — and a run that fetched
+      // nothing would still pass.
+      await page.waitForSelector(
+        '.search__row[data-kind="query"], .search__row[data-kind="navigation"]',
+        { timeout: 15_000 },
+      )
     } catch {
       /* asserted below */
     }
+    await page.waitForTimeout(400)
 
     const suggest = await page.evaluate(() => {
-      const rows = Array.from(document.querySelectorAll('.search__row:not(.search__row--ai)'))
+      const all = Array.from(document.querySelectorAll('.search__row'))
+      const typed = all.filter((el) => el.dataset.kind)
       return {
-        count: rows.length,
-        first: rows[0]?.textContent?.replace(/\s+/g, ' ').trim() ?? null,
-        // The completion is wrapped in <b>; the typed prefix is not.
-        bolded: rows[0]?.querySelector('b')?.textContent ?? null,
-        aiRowStillLast: Boolean(document.querySelector('.search__row--ai')),
+        total: all.length,
+        firstIsAi: all[0]?.classList.contains('search__row--ai') ?? false,
+        kinds: typed.map((el) => el.dataset.kind),
+        texts: typed.map((el) => el.textContent?.replace(/\s+/g, ' ').trim() ?? ''),
+        bolded: typed.map((el) => el.querySelector('b')?.textContent ?? null).find(Boolean) ?? null,
+        hasGlyphs: typed.every((el) => Boolean(el.querySelector('.search__row-glyph svg'))),
       }
     })
     context.off('request', countSuggest)
 
-    if (suggest.count > 0) {
-      pass(`live suggestions: ${suggest.count} rows, first = "${suggest.first}"`)
-    } else {
-      fail('no search suggestions appeared — endpoint blocked or host_permissions wrong')
-    }
+    pass(`dropdown rendered ${suggest.total} rows (1 AI + ${suggest.kinds.length} suggestions)`)
 
     if (suggestHits > 0) pass(`suggestion endpoint called ${suggestHits}x while typing`)
     else fail('no request reached the suggestion endpoint')
+
+    if (suggest.firstIsAi) pass('AI-mode row is pinned FIRST, above the suggestion list')
+    else fail('AI-mode row is not the first row in the dropdown')
+
+    // Real typed data: Google's `google:suggesttype` for remote rows, plus our
+    // own locally stored history.
+    const kindTally = suggest.kinds.reduce((acc, k) => ({ ...acc, [k]: (acc[k] ?? 0) + 1 }), {})
+    const historyCount = kindTally.history ?? 0
+    const remoteCount = suggest.kinds.length - historyCount
+
+    // Both halves must be present. An earlier revision only asserted
+    // `total > 1`, which a run that fetched nothing still satisfied on the
+    // strength of two seeded history rows alone.
+    if (remoteCount > 0) {
+      pass(`${remoteCount} live suggestion(s) fetched: ${JSON.stringify(kindTally)}`)
+    } else {
+      fail(
+        `no live suggestions arrived — only locally seeded history ` +
+          `(${JSON.stringify(kindTally)}). Endpoint blocked, throttled, or too slow.`,
+      )
+    }
+
+    if (historyCount > 0) {
+      pass(`local history surfaced ${historyCount} row(s) with clock icons`)
+    } else {
+      fail(`no history rows surfaced despite seeded history (${JSON.stringify(kindTally)})`)
+    }
+
+    // History must outrank remote guesses, as in a browser address bar.
+    const lastHistory = suggest.kinds.lastIndexOf('history')
+    const firstRemote = suggest.kinds.findIndex((k) => k !== 'history')
+    if (remoteCount > 0 && historyCount > 0 && lastHistory < firstRemote) {
+      pass(`local history ranks above remote suggestions (${suggest.kinds.join(', ')})`)
+    } else if (remoteCount > 0 && historyCount > 0) {
+      fail(`history rows are interleaved with remote ones: ${suggest.kinds.join(', ')}`)
+    }
+
+    if (suggest.hasGlyphs) pass('every suggestion row drew a leading glyph')
+    else fail('a suggestion row rendered without its leading glyph')
 
     if (suggest.bolded) {
       pass(`completion is emphasised, typed prefix is not (bold part: "${suggest.bolded}")`)
@@ -1136,22 +1320,22 @@ async function runExtension() {
       notes.push('suggestion rows rendered without a bolded completion')
     }
 
-    if (suggest.aiRowStillLast) pass('AI-mode row sits below the suggestions')
-    else fail('AI-mode row vanished once suggestions arrived')
-
     // The dropdown must fit on screen. An earlier revision rendered 8
     // suggestions and the list was clipped by the fold — invisible in a code
     // review, obvious in a screenshot, and now caught here.
     const dropFit = await page.evaluate(() => {
       const drop = document.querySelector('.search__drop')
-      if (!drop) return null
+      const bar = document.querySelector('.search__bar')
+      if (!drop || !bar) return null
       const r = drop.getBoundingClientRect()
+      const b = bar.getBoundingClientRect()
       return {
         rows: drop.querySelectorAll('.search__row').length,
         bottom: Math.round(r.bottom),
         viewport: window.innerHeight,
         overshoot: Math.round(r.bottom - window.innerHeight),
         needsScroll: Math.round(drop.scrollHeight - drop.clientHeight),
+        seam: Math.round((r.top - b.bottom) * 100) / 100,
         lifted: getComputedStyle(document.querySelector('.stage')).transform,
       }
     })
@@ -1160,14 +1344,28 @@ async function runExtension() {
       fail('suggestion dropdown not found when measuring fit')
     } else if (dropFit.overshoot > 0) {
       fail(
-        `suggestion dropdown is clipped by ${dropFit.overshoot}px ` +
+        `suggestion dropdown is clipped by the viewport: ${dropFit.overshoot}px past the fold ` +
           `(${dropFit.rows} rows, bottom ${dropFit.bottom} vs viewport ${dropFit.viewport})`,
+      )
+    } else if (dropFit.needsScroll > 0) {
+      // Scrolling means max-height clipped the list even though the viewport
+      // had room — the last row ends up half-visible.
+      fail(
+        `dropdown scrolls by ${dropFit.needsScroll}px: max-height is clipping ` +
+          `${dropFit.rows} rows even though the viewport had room (bottom ${dropFit.bottom} ` +
+          `of ${dropFit.viewport})`,
       )
     } else {
       pass(
-        `dropdown fits on screen: ${dropFit.rows} rows, bottom ${dropFit.bottom} of ` +
-          `${dropFit.viewport}px, no internal scroll needed (${dropFit.needsScroll}px)`,
+        `dropdown fits fully: ${dropFit.rows} rows, bottom ${dropFit.bottom} of ` +
+          `${dropFit.viewport}px, zero internal scroll`,
       )
+    }
+
+    if (dropFit && dropFit.seam === -1) {
+      pass('bar and list joined by a single 1px hairline, with real suggestions loaded')
+    } else {
+      fail(`seam between bar and list is ${dropFit?.seam}px, expected -1`)
     }
 
     if (dropFit && dropFit.lifted !== 'none') {
@@ -1176,7 +1374,30 @@ async function runExtension() {
       notes.push('stage did not lift on focus — dropdown relies on fitting unaided')
     }
 
+    /* ── engine picker inside the bar ──────────────────────────────────────── */
+    await page.locator('.search__engine-btn').click()
+    await page.waitForSelector('.search__engine-menu', { timeout: 6000 })
+    const pickerItems = await page.$$eval('.search__engine-item-text', (els) =>
+      els.map((e) => e.textContent.trim()),
+    )
+    if (pickerItems.join('/') === 'Google/Bing/DuckDuckGo') {
+      pass(`engine picker in the bar offers ${pickerItems.join(' / ')}`)
+    } else {
+      fail(`engine picker lists ${pickerItems.join('/')}`)
+    }
+    // Close the picker by toggling its own button. Escape would reach the
+    // input's handler and clear the query, emptying the list before we can
+    // photograph it.
+    await page.locator('.search__engine-btn').click()
+    await page.waitForTimeout(200)
+
+    // Re-type so the capture shows the full state: AI row first, then history
+    // rows, then live suggestions.
+    await page.locator('.search__input').click()
+    await page.locator('.search__input').fill('chrome')
+    await page.waitForTimeout(900)
     await page.screenshot({ path: join(OUT, 'extension-suggest.png') })
+
     await page.locator('.search__input').fill('')
     await page.keyboard.press('Escape')
 
@@ -1258,7 +1479,27 @@ async function runExtension() {
     hits.bing = 0
     await openMenu(page)
     await clickMenuItem(page, 'Bing 每日')
-    await page.waitForTimeout(9000)
+
+    // Poll for the pool instead of sleeping a fixed 9s. The fixed wait passed
+    // until the page got busier, then began failing because the Bing fetch had
+    // not landed yet — a flaky test, not a broken feature.
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      const size = await page.evaluate(async () => {
+        const bag = await chrome.storage.local.get('pool:bing')
+        return bag['pool:bing']?.photos?.length ?? 0
+      })
+      if (size > 0) break
+      await page.waitForTimeout(500)
+    }
+
+    // Then wait for the swap to reach the screen: the Unsplash attribution must
+    // disappear, since Bing requires none.
+    await page
+      .waitForFunction(() => document.querySelector('.credit') === null, null, {
+        timeout: 30_000,
+      })
+      .catch(() => {})
+
     state = await readState(page)
 
     if (state.settings?.source === 'bing') pass('switched source to Bing')

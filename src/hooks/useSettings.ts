@@ -40,6 +40,7 @@ function sanitize(raw: Partial<Settings> | null): Settings {
     showSeconds: merged.showSeconds !== false,
     showSearch: merged.showSearch !== false,
     engine: isEngine(merged.engine) ? merged.engine : 'google',
+    keepHistory: merged.keepHistory !== false,
     showWeather: merged.showWeather !== false,
     place: isPlace(merged.place) ? merged.place : null,
   }

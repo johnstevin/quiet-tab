@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useCallback, useEffect } from 'react'
 import { Background } from './components/Background'
 import { Clock } from './components/Clock'
 import { ContextMenu } from './components/ContextMenu'
@@ -8,7 +8,9 @@ import { Weather } from './components/Weather'
 import { useSettings } from './hooks/useSettings'
 import { useWallpaper } from './hooks/useWallpaper'
 import { useWeather } from './hooks/useWeather'
+import { clearHistory } from './lib/history'
 import { listSources } from './lib/providers'
+import type { EngineId } from './lib/types'
 
 export default function App() {
   const { settings, loaded, update } = useSettings()
@@ -20,6 +22,8 @@ export default function App() {
   const wallpaper = useWallpaper(settings.source, loaded)
   const { weather } = useWeather(settings.place, loaded && settings.showWeather)
   const { next, prev } = wallpaper
+
+  const onEngineChange = useCallback((engine: EngineId) => update({ engine }), [update])
 
   // Arrow keys mirror the context-menu navigation. Cheap to add and far nicer
   // than right-clicking twice to step through a few photos.
@@ -46,7 +50,13 @@ export default function App() {
       <main className="stage">
         <Clock showSeconds={settings.showSeconds} />
         {settings.showWeather && <Weather data={weather} />}
-        {settings.showSearch && <SearchBox engine={settings.engine} />}
+        {settings.showSearch && (
+          <SearchBox
+            engine={settings.engine}
+            keepHistory={settings.keepHistory}
+            onEngineChange={onEngineChange}
+          />
+        )}
       </main>
 
       <Credit photo={wallpaper.photo} />
@@ -59,6 +69,7 @@ export default function App() {
         onPrev={prev}
         onNext={next}
         onUpdate={update}
+        onClearHistory={clearHistory}
       />
     </>
   )

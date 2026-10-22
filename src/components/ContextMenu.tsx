@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { SourceDescriptor } from '../lib/providers'
-import { ENGINES, ENGINE_ORDER } from '../lib/search'
 import { BLUR_MAX, BLUR_MIN } from '../lib/types'
 import type { Place, Settings, SourceId } from '../lib/types'
 import { geocode, shortPlaceName } from '../lib/weather'
@@ -13,6 +12,7 @@ type Props = {
   onPrev: () => void
   onNext: () => void
   onUpdate: (patch: Partial<Settings>) => void
+  onClearHistory: () => Promise<void>
 }
 
 const EDGE_PADDING = 10
@@ -44,6 +44,7 @@ export function ContextMenu({
   onPrev,
   onNext,
   onUpdate,
+  onClearHistory,
 }: Props) {
   /** Raw cursor position where the menu was requested. */
   const [anchor, setAnchor] = useState<{ x: number; y: number } | null>(null)
@@ -56,12 +57,16 @@ export function ContextMenu({
   const [placeQuery, setPlaceQuery] = useState('')
   const [placeResults, setPlaceResults] = useState<Place[]>([])
 
+  /** Confirms the wipe happened, since the result is otherwise invisible. */
+  const [cleared, setCleared] = useState(false)
+
   const close = useCallback(() => {
     setAnchor(null)
     setPlaced(null)
     setPlaceOpen(false)
     setPlaceQuery('')
     setPlaceResults([])
+    setCleared(false)
   }, [])
 
   useEffect(() => {
@@ -222,24 +227,31 @@ export function ContextMenu({
       </button>
 
       <div className="menu__sep" />
-      <div className="menu__caption">搜索引擎</div>
+      <div className="menu__caption">搜索</div>
 
-      {/* Segmented control rather than three rows: same information, 66px less
-          height, and it is the native idiom for a short exclusive choice. */}
-      <div className="menu__segment" role="radiogroup" aria-label="搜索引擎">
-        {ENGINE_ORDER.map((id) => (
-          <button
-            key={id}
-            type="button"
-            role="radio"
-            aria-checked={settings.engine === id}
-            className={`menu__segment-item${settings.engine === id ? ' is-on' : ''}`}
-            onClick={() => onUpdate({ engine: id })}
-          >
-            {ENGINES[id].short}
-          </button>
-        ))}
-      </div>
+      <button
+        className="menu__item"
+        role="menuitemcheckbox"
+        aria-checked={settings.keepHistory}
+        onClick={() => onUpdate({ keepHistory: !settings.keepHistory })}
+      >
+        <Check on={settings.keepHistory} />
+        <span className="menu__text">记录搜索历史</span>
+      </button>
+
+      <button
+        className="menu__item"
+        role="menuitem"
+        disabled={cleared}
+        onClick={() => {
+          void onClearHistory()
+          setCleared(true)
+        }}
+      >
+        <span className="menu__mark" />
+        <span className="menu__text">清空搜索历史</span>
+        {cleared && <span className="menu__hint">已清空</span>}
+      </button>
 
       <div className="menu__sep" />
 

@@ -16,7 +16,7 @@ import type { EngineId } from './types'
 export type Engine = {
   id: EngineId
   label: string
-  /** Compact label for the segmented control in the context menu. */
+  /** Compact label for the engine picker and the context menu. */
   short: string
   /** Placeholder shown in the input. */
   placeholder: string
@@ -42,8 +42,12 @@ export const ENGINES: Record<EngineId, Engine> = {
     // a server-side feature of its own result page with no public API, so an
     // extension cannot render AI answers itself.
     aiUrl: (q) => `https://www.google.com/search?udm=50&q=${enc(q)}`,
+    // `client=chrome` rather than `client=firefox`: it returns 15 candidates
+    // instead of 10 AND a `google:suggesttype` array, which is what lets the
+    // dropdown show a globe for navigation hits and a magnifier for queries
+    // instead of guessing. Verified against the live endpoint.
     suggestUrl: (q) =>
-      `https://suggestqueries.google.com/complete/search?client=firefox&q=${enc(q)}`,
+      `https://suggestqueries.google.com/complete/search?client=chrome&hl=zh-CN&q=${enc(q)}`,
   },
 
   bing: {
@@ -78,27 +82,51 @@ export function getEngine(id: EngineId): Engine {
 }
 
 /**
- * Maximum suggestions rendered in the dropdown.
+ * What a dropdown row represents. Drives which leading icon is drawn, the same
+ * way a browser address bar distinguishes its row types.
  *
- * Six, not the ten the endpoints return. The search box sits at the bottom of a
- * centred column, so there is only ~190px of viewport beneath it; eight rows
- * plus the AI row overflowed the fold. Six fits once `.stage` lifts on focus,
- * and the dropdown carries a max-height as a backstop for short windows.
+ *  - `history`    a previous search of yours, stored locally (clock icon)
+ *  - `navigation` the provider says this is a site, not a query (globe icon)
+ *  - `query`      an ordinary search suggestion (magnifier icon)
  */
+export type SuggestKind = 'history' | 'navigation' | 'query'
+
+export type Suggestion = {
+  text: string
+  kind: SuggestKind
+}
+
+/** Remote suggestions kept per request. */
 export const SUGGEST_LIMIT = 6
+/** Locally stored history rows shown above the remote suggestions. */
+export const HISTORY_LIMIT = 3
+/**
+ * Hard cap on non-AI rows.
+ *
+ * The search box sits near the bottom of a centred column. Measured at
+ * 1440x900 the bar's underside lands at y=628, and `.stage` lifts 10vh (90px)
+ * on focus, leaving ~360px — about nine 37px rows including the AI row. Going
+ * beyond that makes the list scroll, which is worse than showing fewer rows.
+ */
+export const TOTAL_ROWS_MAX = 8
 
 /**
  * Fetch suggestions.
  *
- * All three providers answer with the OpenSearch array shape
- *   [query, [suggestion, ...], ...]
- * confirmed against each endpoint, so one parser covers them all.
+ * Google (`client=chrome`) answers:
+ *   [query, [text, ...], [], [], { "google:suggesttype": ["QUERY"|"NAVIGATION", ...] }]
+ * Bing and DuckDuckGo answer the plain OpenSearch shape:
+ *   [query, [text, ...]]
+ *
+ * Only Google reports types. For the other two the kind is inferred from the
+ * text itself, which is accurate enough: a suggestion that parses as a URL is a
+ * navigation hit.
  */
 export async function fetchSuggestions(
   engine: Engine,
   query: string,
   signal?: AbortSignal,
-): Promise<string[]> {
+): Promise<Suggestion[]> {
   const res = await fetch(engine.suggestUrl(query), {
     cache: 'no-store',
     ...(signal ? { signal } : {}),
@@ -110,11 +138,25 @@ export async function fetchSuggestions(
   const data: unknown = JSON.parse(await res.text())
   if (!Array.isArray(data)) return []
 
-  const list = data[1]
-  if (!Array.isArray(list)) return []
+  const texts = data[1]
+  if (!Array.isArray(texts)) return []
 
-  return list
-    .filter((item): item is string => typeof item === 'string' && item.length > 0)
+  // The metadata object is the last element, and only Google sends one.
+  const tail = data[data.length - 1]
+  const reportedTypes =
+    tail && typeof tail === 'object' && !Array.isArray(tail)
+      ? (tail as Record<string, unknown>)['google:suggesttype']
+      : undefined
+  const typeList = Array.isArray(reportedTypes) ? reportedTypes : []
+
+  return texts
+    .map((text, index): Suggestion | null => {
+      if (typeof text !== 'string' || text.length === 0) return null
+      const kind: SuggestKind =
+        typeList[index] === 'NAVIGATION' ? 'navigation' : asUrl(text) ? 'navigation' : 'query'
+      return { text, kind }
+    })
+    .filter((item): item is Suggestion => item !== null)
     .slice(0, SUGGEST_LIMIT)
 }
 
