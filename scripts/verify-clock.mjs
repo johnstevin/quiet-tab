@@ -26,6 +26,16 @@ const DIST = join(ROOT, 'dist')
 const OUT = join(ROOT, '.verify')
 
 const MODE = process.argv.includes('--mode=extension') ? 'extension' : 'static'
+/**
+ * Run against the locally installed Google Chrome instead of Playwright's
+ * bundled Chromium.
+ *
+ * Added because a behaviour difference showed up only in the user's real
+ * browser: suggestions worked under bundled Chromium and returned nothing in
+ * Chrome. Reproducing in the actual target is the only way to diagnose that
+ * rather than guess.
+ */
+const USE_REAL_CHROME = process.argv.includes('--chrome')
 
 /* ═══════════════════════════════════════════════════════════════════════════
    Test matrix
@@ -448,6 +458,41 @@ async function runUiChecks(browser, url) {
 
   await page.keyboard.press('Escape')
 
+  /* ── focusing the search box must move NOTHING ───────────────────────────── */
+  // This is the regression the user reported: an earlier revision lifted the
+  // whole column 10vh when the list opened, jolting the clock by 90px. In a
+  // project whose entire premise is that a clock must not move, that was a
+  // design error, not a tuning problem.
+  await page.locator('.search__input').fill('')
+  await page.mouse.click(1240, 780)
+  await page.waitForTimeout(250)
+
+  const readStage = () =>
+    page.evaluate(() => {
+      const stage = document.querySelector('.stage')
+      const box = stage.getBoundingClientRect()
+      const clock = document.querySelector('[data-testid="clock"]').getBoundingClientRect()
+      const date = document.querySelector('[data-testid="clock-date"]').getBoundingClientRect()
+      const bar = document.querySelector('.search__bar')?.getBoundingClientRect() ?? null
+      const r = (n) => Math.round(n * 1000) / 1000
+      return {
+        transform: getComputedStyle(stage).transform,
+        stageY: r(box.y),
+        clock: { x: r(clock.x), y: r(clock.y), w: r(clock.width) },
+        dateY: r(date.y),
+        barY: bar ? r(bar.y) : null,
+      }
+    })
+
+  const stageIdle = await readStage()
+  await page.locator('.search__input').click()
+  await page.locator('.search__input').fill('chrome extension')
+  // Generous: any transition would have finished well inside this.
+  await page.waitForTimeout(650)
+  const stageOpen = await readStage()
+  await page.locator('.search__input').fill('')
+  await page.keyboard.press('Escape')
+
   /* ── dropdown cap across viewport sizes ──────────────────────────────────── */
   // A single-size check cannot catch this: the full list clears the fold with
   // 7px to spare at 1440x900 and overflows a 720px-tall window by ~76px, so the
@@ -548,6 +593,8 @@ async function runUiChecks(browser, url) {
     menuLabels,
     engineItems,
     caps,
+    stageIdle,
+    stageOpen,
     weather,
     consoleErrors,
   }
@@ -984,6 +1031,31 @@ async function runStatic() {
     fail(`search toggle broken (hidden=${ui.searchHidden} restored=${ui.searchRestored})`)
   }
 
+  const moved = ['x', 'y', 'w'].filter((k) => ui.stageIdle.clock[k] !== ui.stageOpen.clock[k])
+  if (
+    moved.length === 0 &&
+    ui.stageIdle.dateY === ui.stageOpen.dateY &&
+    ui.stageIdle.barY === ui.stageOpen.barY
+  ) {
+    pass(
+      'focusing the search box moves nothing: clock, date and bar all hold ' +
+        `(clock y=${ui.stageOpen.clock.y}, bar y=${ui.stageOpen.barY})`,
+    )
+  } else {
+    fail(
+      'focusing the search box moved the page — ' +
+        `clock ${JSON.stringify(ui.stageIdle.clock)} -> ${JSON.stringify(ui.stageOpen.clock)}, ` +
+        `date ${ui.stageIdle.dateY} -> ${ui.stageOpen.dateY}, ` +
+        `bar ${ui.stageIdle.barY} -> ${ui.stageOpen.barY}`,
+    )
+  }
+
+  if (ui.stageOpen.transform === 'none') {
+    pass('no transform is applied to the column while the list is open')
+  } else {
+    fail(`column carries transform "${ui.stageOpen.transform}" while the list is open`)
+  }
+
   const badCaps = ui.caps.filter((c) => !c || Math.abs(c.maxHeight - c.expected) > 1)
   if (badCaps.length === 0) {
     pass(
@@ -1054,11 +1126,26 @@ async function runExtension() {
     headless: false,
     timezoneId: 'UTC',
     viewport: { width: 1440, height: 900 },
+    // `channel: 'chrome'` picks up the installed Google Chrome; without it
+    // Playwright uses its own bundled Chromium build.
+    ...(USE_REAL_CHROME ? { channel: 'chrome' } : {}),
     args: [
       `--disable-extensions-except=${DIST}`,
       `--load-extension=${DIST}`,
       '--window-size=1460,1000',
     ],
+  })
+
+  console.log(`  browser: ${USE_REAL_CHROME ? 'installed Google Chrome' : 'bundled Chromium'}`)
+
+  // Surface the real reason a request died, instead of letting the app's silent
+  // catch hide it.
+  const failedRequests = []
+  context.on('requestfailed', (req) => {
+    const url = req.url()
+    if (/suggestqueries|api\.bing|duckduckgo|unsplash|bing\.com/.test(url)) {
+      failedRequests.push(`${req.failure()?.errorText ?? 'unknown'} <- ${url.slice(0, 110)}`)
+    }
   })
 
   const cspViolations = []
@@ -1275,6 +1362,14 @@ async function runExtension() {
     if (suggestHits > 0) pass(`suggestion endpoint called ${suggestHits}x while typing`)
     else fail('no request reached the suggestion endpoint')
 
+    if (failedRequests.length > 0) {
+      fail(`network request(s) failed: ${failedRequests.slice(0, 3).join(' | ')}`)
+    }
+
+    if (failedRequests.length > 0) {
+      fail(`network request(s) failed: ${failedRequests.slice(0, 3).join(' | ')}`)
+    }
+
     if (suggest.firstIsAi) pass('AI-mode row is pinned FIRST, above the suggestion list')
     else fail('AI-mode row is not the first row in the dropdown')
 
@@ -1368,13 +1463,52 @@ async function runExtension() {
       fail(`seam between bar and list is ${dropFit?.seam}px, expected -1`)
     }
 
-    if (dropFit && dropFit.lifted !== 'none') {
-      pass(`column lifts to make room on focus (transform ${dropFit.lifted})`)
+    // Nothing may move when the list opens. The column reserves room under the
+    // search box instead of lifting, so a transform here would be a regression
+    // of exactly the jolt the user reported.
+    if (dropFit && dropFit.lifted === 'none') {
+      pass('list opens with zero movement — no transform on the column')
     } else {
-      notes.push('stage did not lift on focus — dropdown relies on fitting unaided')
+      fail(`column carries transform "${dropFit?.lifted}" while the list is open`)
     }
 
     /* ── engine picker inside the bar ──────────────────────────────────────── */
+
+    // Before touching the picker: prove the fallback chain. Block the preferred
+    // `client=chrome` variant and confirm suggestions still arrive via
+    // `client=firefox`. Without this the fallback would be untested code that
+    // only ever runs on someone else's machine.
+    //
+    // The matcher is hoisted to a const: Playwright matches routes by handler
+    // identity, so unrouting with a fresh arrow function would silently leave
+    // the interception in place for the rest of the run.
+    const blockChromeClient = (url) =>
+      url.href.includes('/complete/search') && url.href.includes('client=chrome')
+    await context.route(blockChromeClient, (route) => route.abort())
+
+    await page.locator('.search__input').fill('')
+    await page.locator('.search__input').fill('github')
+    let fallbackRows = 0
+    try {
+      await page.waitForSelector(
+        '.search__row[data-kind="query"], .search__row[data-kind="navigation"]',
+        { timeout: 15_000 },
+      )
+      fallbackRows = await page.evaluate(
+        () => document.querySelectorAll('.search__row[data-kind]').length,
+      )
+    } catch {
+      /* asserted below */
+    }
+    await context.unroute(blockChromeClient)
+
+    if (fallbackRows > 0) {
+      pass(`fallback endpoint works: ${fallbackRows} rows with client=chrome blocked`)
+    } else {
+      fail('no suggestions when client=chrome is blocked — the fallback chain is broken')
+    }
+
+    await page.locator('.search__input').fill('')
     await page.locator('.search__engine-btn').click()
     await page.waitForSelector('.search__engine-menu', { timeout: 6000 })
     const pickerItems = await page.$$eval('.search__engine-item-text', (els) =>
@@ -1506,8 +1640,23 @@ async function runExtension() {
     else fail(`source should be bing, got "${state.settings?.source}"`)
 
     const bingPool = state.pools['pool:bing'] ?? 0
-    if (bingPool > 1) pass(`Bing pool holds ${bingPool} photos (8 past days)`)
-    else fail(`Bing pool holds only ${bingPool} photo(s)`)
+    if (bingPool > 1) {
+      pass(`Bing pool holds ${bingPool} photos (8 past days)`)
+    } else {
+      // The app already records why a provider failed and shows it in the
+      // context menu. Read it out rather than leaving the cause a mystery.
+      let reason = '(菜单未报错)'
+      try {
+        await openMenu(page)
+        reason =
+          (await page.locator('.menu__error').first().textContent({ timeout: 2000 }))?.trim() ??
+          reason
+        await page.keyboard.press('Escape')
+      } catch {
+        /* no error row rendered */
+      }
+      fail(`Bing pool holds only ${bingPool} photo(s) — provider said: ${reason}`)
+    }
 
     if (hits.bing > 0) pass(`bing.com called ${hits.bing}x after the switch`)
     else fail('bing.com was never called after switching source')
@@ -1562,8 +1711,12 @@ async function runExtension() {
     if (cspViolations.length) fail(`CSP violation: ${cspViolations[0]}`)
     else pass('zero CSP violations')
 
-    if (consoleErrors.length) notes.push(`console errors: ${consoleErrors.slice(0, 3).join(' | ')}`)
-    else pass('no console errors')
+    // `net::ERR_FAILED` entries are our own doing: the fallback-chain check
+    // aborts the client=chrome request on purpose, and Chrome logs that as a
+    // failed resource. Filter them so a real error is not buried.
+    const realErrors = consoleErrors.filter((t) => !/net::ERR_FAILED/.test(t))
+    if (realErrors.length) notes.push(`console errors: ${realErrors.slice(0, 3).join(' | ')}`)
+    else pass('no console errors (deliberate fallback-test aborts excluded)')
 
     await page.bringToFront()
     await page.waitForTimeout(600)

@@ -23,7 +23,16 @@ export type Engine = {
   url: (query: string) => string
   /** Hand off to the engine's conversational mode, where one exists. */
   aiUrl: ((query: string) => string) | null
-  suggestUrl: (query: string) => string
+  /**
+   * Suggestion endpoints, tried in order until one returns rows.
+   *
+   * A list rather than a single URL because `client=chrome` — the variant that
+   * also reports suggestion types — is intended for Chrome's own omnibox and
+   * cannot be assumed to answer from every context. Falling through to
+   * `client=firefox` (plain strings, no types) keeps suggestions working even
+   * when the richer variant is refused.
+   */
+  suggestUrls: Array<(query: string) => string>
 }
 
 const enc = encodeURIComponent
@@ -42,12 +51,15 @@ export const ENGINES: Record<EngineId, Engine> = {
     // a server-side feature of its own result page with no public API, so an
     // extension cannot render AI answers itself.
     aiUrl: (q) => `https://www.google.com/search?udm=50&q=${enc(q)}`,
-    // `client=chrome` rather than `client=firefox`: it returns 15 candidates
-    // instead of 10 AND a `google:suggesttype` array, which is what lets the
-    // dropdown show a globe for navigation hits and a magnifier for queries
-    // instead of guessing. Verified against the live endpoint.
-    suggestUrl: (q) =>
-      `https://suggestqueries.google.com/complete/search?client=chrome&hl=zh-CN&q=${enc(q)}`,
+    suggestUrls: [
+      // Preferred: 15 candidates plus a `google:suggesttype` array, which is
+      // what lets the list show a globe for navigation hits and a magnifier
+      // for queries instead of guessing.
+      (q) => `https://suggestqueries.google.com/complete/search?client=chrome&hl=zh-CN&q=${enc(q)}`,
+      // Fallback: plain OpenSearch strings, 10 candidates, no types. Verified
+      // working independently.
+      (q) => `https://suggestqueries.google.com/complete/search?client=firefox&q=${enc(q)}`,
+    ],
   },
 
   bing: {
@@ -59,7 +71,7 @@ export const ENGINES: Record<EngineId, Engine> = {
     // Bing's Copilot has no stable query-string entry point equivalent to
     // udm=50, so no AI handoff is offered rather than guessing at a URL.
     aiUrl: null,
-    suggestUrl: (q) => `https://api.bing.com/osjson.aspx?query=${enc(q)}`,
+    suggestUrls: [(q) => `https://api.bing.com/osjson.aspx?query=${enc(q)}`],
   },
 
   duckduckgo: {
@@ -71,7 +83,7 @@ export const ENGINES: Record<EngineId, Engine> = {
     aiUrl: null,
     // `type=list` matters: without it the response is [{phrase: "..."}, ...]
     // instead of the OpenSearch array every other provider returns.
-    suggestUrl: (q) => `https://duckduckgo.com/ac/?q=${enc(q)}&type=list`,
+    suggestUrls: [(q) => `https://duckduckgo.com/ac/?q=${enc(q)}&type=list`],
   },
 }
 
@@ -103,22 +115,26 @@ export const HISTORY_LIMIT = 3
 /**
  * Hard cap on non-AI rows.
  *
- * The search box sits near the bottom of a centred column. Measured at
- * 1440x900 the bar's underside lands at y=628, and `.stage` lifts 10vh (90px)
- * on focus, leaving ~360px — about nine 37px rows including the AI row. Going
- * beyond that makes the list scroll, which is worse than showing fewer rows.
+ * Five, so the full list (1 AI row + up to 5 = 6 rows, ~242px) fits the ~285px
+ * reserved under the search box with margin to spare — including when the
+ * weather line is present, which pushes the bar 16px lower.
+ *
+ * The column no longer lifts on focus (see the `.stage` comment in main.css),
+ * so this cap and that reserved space are two halves of one decision: raising
+ * either without the other brings back a clipped list or a top-heavy page.
  */
-export const TOTAL_ROWS_MAX = 8
+export const TOTAL_ROWS_MAX = 5
 
 /**
- * Fetch suggestions.
+ * Fetch suggestions, trying each of the engine's endpoints until one answers.
  *
  * Google (`client=chrome`) answers:
  *   [query, [text, ...], [], [], { "google:suggesttype": ["QUERY"|"NAVIGATION", ...] }]
- * Bing and DuckDuckGo answer the plain OpenSearch shape:
+ * Google (`client=firefox`), Bing and DuckDuckGo answer the plain OpenSearch
+ * shape:
  *   [query, [text, ...]]
  *
- * Only Google reports types. For the other two the kind is inferred from the
+ * Only the first reports types. Everywhere else the kind is inferred from the
  * text itself, which is accurate enough: a suggestion that parses as a URL is a
  * navigation hit.
  */
@@ -127,11 +143,30 @@ export async function fetchSuggestions(
   query: string,
   signal?: AbortSignal,
 ): Promise<Suggestion[]> {
-  const res = await fetch(engine.suggestUrl(query), {
+  let lastError: unknown = null
+
+  for (const buildUrl of engine.suggestUrls) {
+    try {
+      const rows = await fetchFrom(buildUrl(query), signal)
+      if (rows.length > 0) return rows
+    } catch (err) {
+      // An aborted request means a newer keystroke superseded this one; stop
+      // rather than hammering the fallback.
+      if (signal?.aborted) throw err
+      lastError = err
+    }
+  }
+
+  if (lastError) throw lastError
+  return []
+}
+
+async function fetchFrom(url: string, signal?: AbortSignal): Promise<Suggestion[]> {
+  const res = await fetch(url, {
     cache: 'no-store',
     ...(signal ? { signal } : {}),
   })
-  if (!res.ok) throw new Error(`suggest: HTTP ${res.status}`)
+  if (!res.ok) throw new Error(`suggest: HTTP ${res.status} <- ${url}`)
 
   // Google and DuckDuckGo answer with `Content-Type: text/javascript`, so parse
   // the text ourselves instead of relying on res.json() honouring it.
@@ -141,7 +176,7 @@ export async function fetchSuggestions(
   const texts = data[1]
   if (!Array.isArray(texts)) return []
 
-  // The metadata object is the last element, and only Google sends one.
+  // The metadata object is the last element, and only `client=chrome` sends one.
   const tail = data[data.length - 1]
   const reportedTypes =
     tail && typeof tail === 'object' && !Array.isArray(tail)

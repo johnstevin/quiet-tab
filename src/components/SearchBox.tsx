@@ -171,10 +171,13 @@ export function SearchBox({ engine: engineId, keepHistory, onEngineChange }: Pro
   /**
    * Measure the space under the bar and cap the list to it.
    *
-   * Measured twice: once immediately (conservative — `.stage` has not finished
-   * lifting yet) and once after the 280ms lift settles, when the real gap is
-   * known. Without the second pass the list would be clamped to the pre-lift
-   * gap and scroll unnecessarily.
+   * A fixed `max-height` cannot work: at 1440x900 a full list clears the fold
+   * with a few pixels to spare, while on a 720px-tall window the same list
+   * would overflow by ~76px.
+   *
+   * Nothing on the page moves when the list opens (see `.stage` padding in
+   * main.css), so one measurement at open time is correct — no waiting for an
+   * animation to settle. Re-measured on resize only.
    */
   useLayoutEffect(() => {
     if (!open) {
@@ -182,6 +185,7 @@ export function SearchBox({ engine: engineId, keepHistory, onEngineChange }: Pro
       return
     }
 
+    /** Breathing room kept between the list and the bottom of the window. */
     const GAP = 16
 
     const measure = () => {
@@ -192,13 +196,8 @@ export function SearchBox({ engine: engineId, keepHistory, onEngineChange }: Pro
     }
 
     measure()
-    const settled = window.setTimeout(measure, 320)
     window.addEventListener('resize', measure)
-
-    return () => {
-      window.clearTimeout(settled)
-      window.removeEventListener('resize', measure)
-    }
+    return () => window.removeEventListener('resize', measure)
   }, [open])
 
   // Dismiss the engine picker on an outside click or Escape.

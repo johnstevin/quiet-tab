@@ -60,27 +60,22 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  /* Nudge the block slightly above true centre — optically centred text reads
-     better than mathematically centred text. */
-  padding-bottom: 4vh;
-  transition: transform 280ms cubic-bezier(0.16, 1, 0.3, 1);
-}
+  /* Sits a little above true centre. This is load-bearing, not decoration: it
+     reserves room under the search box for the suggestion list, so the list can
+     open WITHOUT anything on the page moving.
 
-/* Make room for the suggestion dropdown.
-   The search box sits at the bottom of this column, leaving only ~190px of
-   viewport beneath it — not enough for six suggestions plus the AI row, so the
-   list used to be clipped by the fold. Lifting the whole column on focus is
-   nicer than shrinking the list or making it scroll.
-   `:has()` keeps this in CSS with no extra state plumbed through React; it is
-   supported from Chrome 105 and the manifest requires 120. */
-.stage:has(.search.is-open) {
-  transform: translateY(-10vh);
-}
+     An earlier revision kept the column centred and lifted it 10vh when the
+     list opened. That worked geometrically and was wrong in spirit — this whole
+     project exists because a clock that jumps is unacceptable, and focusing the
+     search box jolted the entire column by 90px.
 
-@media (prefers-reduced-motion: reduce) {
-  .stage {
-    transition: none;
-  }
+     The value is a compromise, settled by looking at both states: 10vh gave the
+     list plenty of room but left the resting page visibly top-heavy, with a
+     third of the screen empty below. 7vh keeps the resting composition close to
+     centred while still clearing ~285px under the bar — enough for the capped
+     six-row list with margin to spare. TOTAL_ROWS_MAX in lib/search.ts is tuned
+     against this number; the two have to move together. */
+  padding-bottom: 7vh;
 }
 
 .clock-wrap {

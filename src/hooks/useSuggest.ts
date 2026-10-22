@@ -72,8 +72,22 @@ export function useSuggest(
         try {
           const list = await fetchSuggestions(ENGINES[engine], text, controller.signal)
           if (!controller.signal.aborted) setRemote(list)
-        } catch {
-          // Aborted, offline, throttled, or the response shape changed.
+        } catch (err) {
+          if (controller.signal.aborted) return
+
+          // The UI stays silent — a new tab page must not show an error — but a
+          // failure with no trace at all made a real problem (no suggestions in
+          // one browser, working in another) impossible to diagnose. One
+          // concise warning in DevTools costs nothing visually.
+          console.warn(
+            '[quiet-tab] 搜索建议请求失败：',
+            err instanceof Error ? err.message : err,
+            '\n  已尝试的端点：\n    ' +
+              ENGINES[engine].suggestUrls.map((build) => build(text)).join('\n    '),
+            '\n  若报 CORS / 权限错误：请在 chrome://extensions 把本扩展「移除」后重新' +
+              '「加载已解压的扩展程序」。对已安装的未打包扩展，新增的 host_permissions ' +
+              '不一定随「刷新」生效。',
+          )
         }
       })()
     }, DEBOUNCE_MS)
