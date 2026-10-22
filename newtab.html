@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>新标签页</title>
+
+    <!--
+      FIRST-PAINT GUARD (fix ② — no white flash, no layout jump).
+      This inline <style> is intentional and CSP-safe: MV3's default policy
+      restricts script-src, not style-src. It must stay inline because the
+      background colour has to exist before the external stylesheet or any JS
+      is fetched — otherwise Chrome paints its default white for a frame and
+      the user sees a flash on every single new tab.
+    -->
+    <style>
+      html {
+        background-color: #15181c;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        overflow: hidden;
+      }
+    </style>
+
+    <!--
+      `crossorigin` is required even for same-origin font preloads, otherwise
+      Chrome fetches the file twice and the preload is wasted. font-display:block
+      plus this preload is what keeps the clock from reflowing when the webfont
+      lands (fix ②b).
+    -->
+    <link
+      rel="preload"
+      href="/fonts/inter-latin-wght-normal.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link
+      rel="preload"
+      href="/fonts/noto-sans-sc-date.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link rel="preload" href="/images/fallback-bg.png" as="image" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

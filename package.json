@@ -1,0 +1,39 @@
+{
+  "name": "quiet-tab",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "极简新标签页：一个永不跳变的时钟，配每日高清壁纸。",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "postinstall": "node scripts/sync-font.mjs",
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "npm run typecheck && node scripts/sync-font.mjs && vite build",
+    "build:watch": "vite build --watch",
+    "icons": "node scripts/make-icons.mjs",
+    "assets": "node scripts/make-icons.mjs && node scripts/make-fallback-bg.mjs && node scripts/make-date-font.mjs",
+    "verify": "node scripts/verify-clock.mjs",
+    "verify:ext": "node scripts/verify-clock.mjs --mode=extension"
+  },
+  "dependencies": {
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@fontsource-variable/inter": "^5.3.0",
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/chrome": "^0.3.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "playwright": "^1.64.1",
+    "subset-font": "^2.9.0",
+    "tailwindcss": "^4.3.3",
+    "typescript": "~5.9.3",
+    "vite": "^8.3.5"
+  }
+}

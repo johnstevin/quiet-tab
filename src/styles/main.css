@@ -1,0 +1,907 @@
+@import 'tailwindcss';
+
+/* ═════════════════════════════════════════════════════════════════════════════
+   FONT
+   ═════════════════════════════════════════════════════════════════════════════ */
+
+@font-face {
+  font-family: 'InterVar';
+  src: url('/fonts/inter-latin-wght-normal.woff2') format('woff2-variations');
+  font-weight: 100 900;
+  font-style: normal;
+  /* `block`, not `swap`.
+     `swap` would paint the clock in a fallback font and then re-shape it the
+     moment Inter lands — a one-frame deformation of exactly the kind we are
+     eliminating (fix 2b). The file sits on local disk, so the block period is
+     single-digit milliseconds, never the 3s worst case. */
+  font-display: block;
+}
+
+/* Noto Sans SC, subsetted to "0123456789年月日星期一二三四五六" (21 glyphs,
+   13KB) with the weight axis kept live at 300-700. The full variable font is
+   17.7 MB, which would be absurd for a one-line date.
+   Keep the glyph set in sync with snapshot() in src/lib/time.ts. */
+@font-face {
+  font-family: 'NotoSCDate';
+  src: url('/fonts/noto-sans-sc-date.woff2') format('woff2-variations');
+  font-weight: 300 700;
+  font-style: normal;
+  font-display: block;
+}
+
+@theme {
+  --font-clock: 'InterVar', ui-sans-serif, system-ui, sans-serif;
+
+  /* The date line is rendered entirely in Noto Sans SC, subsetted to the 21
+     glyphs it can ever need (see scripts/make-date-font.mjs). Digits and CJK
+     therefore come from one typeface instead of Inter + whatever the OS
+     happens to provide, and it looks identical on Windows and macOS. */
+  --font-date:
+    'NotoSCDate', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC',
+    ui-sans-serif, sans-serif;
+
+  /* Chrome for the context menu and credit line. Pure system stack on purpose:
+     "上一张", "背景模糊" etc. are NOT in the date subset, so these must not use
+     --font-date. */
+  --font-ui:
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei',
+    sans-serif;
+}
+/* ═════════════════════════════════════════════════════════════════════════════
+   STAGE
+   ═════════════════════════════════════════════════════════════════════════════ */
+
+.stage {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  /* One centred column: clock, date, weather, search. */
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  /* Nudge the block slightly above true centre — optically centred text reads
+     better than mathematically centred text. */
+  padding-bottom: 4vh;
+  transition: transform 280ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Make room for the suggestion dropdown.
+   The search box sits at the bottom of this column, leaving only ~190px of
+   viewport beneath it — not enough for six suggestions plus the AI row, so the
+   list used to be clipped by the fold. Lifting the whole column on focus is
+   nicer than shrinking the list or making it scroll.
+   `:has()` keeps this in CSS with no extra state plumbed through React; it is
+   supported from Chrome 105 and the manifest requires 120. */
+.stage:has(.search.is-open) {
+  transform: translateY(-10vh);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stage {
+    transition: none;
+  }
+}
+
+.clock-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  /* Text sits on a photo, so it needs its own contrast floor. */
+  text-shadow: 0 2px 28px rgba(0, 0, 0, 0.42);
+}
+/* ═════════════════════════════════════════════════════════════════════════════
+   THE CLOCK — this block is the entire point of the project.
+   Five independent guarantees that the layout cannot move. Each is annotated
+   with the failure mode it defeats.
+   ═════════════════════════════════════════════════════════════════════════════ */
+
+.clock {
+  /* Slot geometry lives HERE, not on :root, so the `em` unit resolves against
+     the clock's own font-size with no ambiguity.
+
+     0.68em is chosen deliberately. Measured advance widths in Inter (upem
+     2048, wght 400): "1" = 0.4067em, "4" = 0.646em (widest), "0" = 0.6309em.
+     The slot must clear the WIDEST glyph, so 0.68em. Note that `1ch` would be
+     WRONG here: `ch` is the advance of "0" = 0.6309em, which is 2.3% NARROWER
+     than "4" — a 14:44:44 clock would overflow its own slots. */
+  --digit-slot: 0.68em;
+  --colon-slot: 0.3em;
+
+  font-family: var(--font-clock);
+  font-weight: 200;
+  font-size: clamp(3.5rem, 13vw, 14rem);
+  line-height: 1;
+  color: #fff;
+
+  /* ── FIX 1, DEFENCE 1 ──────────────────────────────────────────────────────
+     Ask the font for tabular (monospaced) figures. Inter ships a real `tnum`
+     feature, verified by parsing the GSUB table of the upstream TTF. When this
+     is honoured, every digit advances identically and nothing shifts.
+     `lnum` forces lining (not old-style) figures so digits share one height. */
+  font-variant-numeric: tabular-nums lining-nums;
+  /* `calt`/`liga` off: contextual alternates could substitute a different glyph
+     depending on neighbouring characters, which would change advance width
+     mid-string. */
+  font-feature-settings:
+    'tnum' 1,
+    'lnum' 1,
+    'calt' 0,
+    'liga' 0;
+
+  /* ── FIX 6 ────────────────────────────────────────────────────────────────
+     Inter is a variable font with an optical-size axis (opsz 14→32).
+     `font-optical-sizing: auto` silently re-tunes glyph metrics as font-size
+     changes, so a responsive clamp() could alter advance widths at different
+     viewport widths. Freeze the axis. */
+  font-optical-sizing: none;
+  /* Kerning is a per-pair adjustment: "11" and "10" would kern differently and
+     the string width would wobble. Off. */
+  font-kerning: none;
+  /* Use floating-point advances instead of letting Chrome round each glyph to
+     a whole pixel (rounding is what produces sub-pixel crawl). */
+  text-rendering: geometricPrecision;
+  -webkit-font-smoothing: antialiased;
+
+  /* ── FIX 4 ────────────────────────────────────────────────────────────────
+     Stop layout recalculation from escaping this element. `paint` is
+     deliberately NOT included: with line-height 1 the line box is 1em while
+     Inter's ascent+descent is ~1.21em, so paint containment would clip the
+     glyph tops. `layout style` gives us the isolation without the clipping. */
+  contain: layout style;
+
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+
+  /* ── FIX 2 ────────────────────────────────────────────────────────────────
+     Reserve the exact final box on the very first frame. Because the width is
+     stated explicitly rather than derived from content, the element's outer
+     box is a constant — so the date line below it can never be pushed around,
+     no matter what the clock contains. */
+  width: calc(6 * var(--digit-slot) + 2 * var(--colon-slot));
+  height: 1em;
+
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Seconds hidden: 4 digits + 1 colon. Declared as its own fixed width rather
+   than letting the flex row shrink to content, so the no-jitter guarantee holds
+   identically in both layouts. */
+.clock[data-seconds='off'] {
+  width: calc(4 * var(--digit-slot) + 1 * var(--colon-slot));
+}
+
+/* ── FIX 1, DEFENCE 2 — the structural guarantee ─────────────────────────────
+   Every digit is boxed in a slot whose width derives ONLY from font-size.
+   This is the load-bearing rule: the slot is identical regardless of which
+   glyph lands inside it, regardless of whether `tnum` was honoured, and
+   regardless of whether the webfont has loaded at all. Horizontal displacement
+   is therefore mathematically zero, not merely "small".
+   `flex: 0 0 <w>` = don't grow, don't shrink, basis fixed. */
+.clock__digit {
+  flex: 0 0 var(--digit-slot);
+  text-align: center;
+  /* Guard against a future utility class resetting this on a child. */
+  font-variant-numeric: inherit;
+}
+
+.clock__colon {
+  flex: 0 0 var(--colon-slot);
+  text-align: center;
+  /* The colon is visually heavy at thin weights; dim it so the digits lead. */
+  opacity: 0.82;
+}
+/* ═════════════════════════════════════════════════════════════════════════════
+   DATE
+   ═════════════════════════════════════════════════════════════════════════════ */
+
+.clock-date {
+  font-family: var(--font-date);
+  /* 500, not 300. At 16-24px the horizontal strokes of a thin CJK glyph fall
+     below one device pixel and Windows ClearType renders them as a grey
+     smudge. 500 stays crisp while still reading as light next to the
+     200-weight clock above. */
+  font-weight: 500;
+  font-size: clamp(0.95rem, 1.45vw, 1.45rem);
+  line-height: 1.5;
+  /* Height is fixed for the same reason as the clock: the line must not resize
+     when the webfont resolves. */
+  height: 1.5em;
+  letter-spacing: 0.16em;
+  /* Optical correction: letter-spacing adds trailing space after the last
+     glyph, which pushes centred text left by half a space. */
+  text-indent: 0.16em;
+  color: rgba(255, 255, 255, 0.92);
+  /* The date is small and sits over an arbitrary photograph. A tight dark halo
+     plus a wide soft one keeps it legible over both bright mist and busy
+     foliage. */
+  text-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.55),
+    0 2px 20px rgba(0, 0, 0, 0.5);
+  font-variant-numeric: tabular-nums lining-nums;
+  margin-top: 1.1rem;
+  user-select: none;
+  -webkit-user-select: none;
+}
+/* ═════════════════════════════════════════════════════════════════════════════
+   BACKGROUND — fix 5
+   Both layers are absolutely positioned with explicit 100%/100% + object-fit,
+   so the image's intrinsic dimensions NEVER participate in layout. A 3840x2160
+   photo arriving late therefore cannot reflow anything. Cross-fade animates
+   `opacity` only, which the compositor handles off the main thread.
+   ═════════════════════════════════════════════════════════════════════════════ */
+
+.bg {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  background-color: #15181c;
+}
+
+.bg__layer {
+  position: absolute;
+  /* Oversized past the viewport by --bg-bleed on every side, so the Gaussian
+     blur's feathered edge lands outside the clip region (`.bg` has
+     overflow:hidden).
+
+     --bg-bleed is a CONSTANT supplied by Background.tsx (derived once from
+     BLUR_MAX). It must never track the live blur radius: these layers are
+     object-fit:cover, so resizing them re-derives the cover scale and the photo
+     visibly zooms and drifts as the slider moves.
+
+     Explicit width/height are REQUIRED: for absolutely positioned REPLACED
+     elements (<img>), `width: auto` resolves to the image's intrinsic width and
+     the inset values are ignored — unlike non-replaced elements. Sizing via
+     insets alone would let a 2560px photo overflow by 2560px. */
+  top: calc(-1 * var(--bg-bleed, 0px));
+  left: calc(-1 * var(--bg-bleed, 0px));
+  width: calc(100% + 2 * var(--bg-bleed, 0px));
+  height: calc(100% + 2 * var(--bg-bleed, 0px));
+  /* Tailwind's preflight ships `img, video { max-width: 100% }`, which silently
+     clamped the width above back to the viewport — the overscan survived
+     vertically but not horizontally, leaving the blur's feathered edge visible
+     down the left and right sides. Caught by the geometry assertion in
+     scripts/verify-clock.mjs, which is exactly the class of defect the eye
+     misses. */
+  max-width: none;
+  max-height: none;
+  object-fit: cover;
+  object-position: center;
+  /* Kill the 'broken image' icon / alt text box if a layer ever fails. */
+  color: transparent;
+}
+
+/* Applied through a data attribute rather than unconditionally: even
+   `blur(0px)` promotes the element to its own composited texture, which for a
+   full-screen photo means an avoidable multi-megabyte GPU allocation.
+   Only the filter changes with the slider — never the box. */
+.bg[data-blur='on'] .bg__layer {
+  filter: blur(var(--bg-blur));
+}
+
+.bg__layer--top {
+  opacity: 0;
+  transition: opacity 600ms ease-out;
+  will-change: opacity;
+}
+
+.bg__layer--top.is-visible {
+  opacity: 1;
+}
+
+/* Readability floor for white text over an arbitrary photograph.
+   Two parts:
+   1. A soft elliptical darkening centred on the text block. Bing's photos are
+      frequently bright (snow, mist, backlit foliage) and a pure top/bottom
+      gradient leaves the middle — exactly where the text sits — unprotected.
+      Feathered to 72% so it reads as natural vignetting, not as a panel.
+   2. The classic top/bottom gradient for overall grounding. */
+.bg__scrim {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(
+      ellipse 54% 34% at 50% 46%,
+      rgba(0, 0, 0, 0.36) 0%,
+      rgba(0, 0, 0, 0.18) 42%,
+      rgba(0, 0, 0, 0) 72%
+    ),
+    linear-gradient(
+      180deg,
+      rgba(0, 0, 0, 0.3) 0%,
+      rgba(0, 0, 0, 0.08) 38%,
+      rgba(0, 0, 0, 0.18) 66%,
+      rgba(0, 0, 0, 0.46) 100%
+    );
+}
+/* ═════════════════════════════════════════════════════════════════════════════
+   ACCESSIBILITY / MOTION
+   ═════════════════════════════════════════════════════════════════════════════ */
+
+@media (prefers-reduced-motion: reduce) {
+  .bg__layer--top {
+    transition: none;
+  }
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border-width: 0;
+}
+/* ═════════════════════════════════════════════════════════════════════════════
+   CONTEXT MENU
+   In-page rather than chrome.contextMenus, which keeps the permission list
+   minimal and allows a slider. Frosted panel so it reads as an overlay on the
+   photograph rather than a floating opaque box.
+   ═════════════════════════════════════════════════════════════════════════════ */
+
+.menu {
+  position: fixed;
+  z-index: 10;
+  min-width: 248px;
+  padding: 6px;
+  border-radius: 13px;
+  background: rgba(23, 26, 31, 0.82);
+  backdrop-filter: blur(20px) saturate(150%);
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  box-shadow:
+    0 18px 52px rgba(0, 0, 0, 0.52),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  color: rgba(255, 255, 255, 0.92);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.3;
+  user-select: none;
+  -webkit-user-select: none;
+
+  /* Invisible until useLayoutEffect has measured and clamped it to the
+     viewport, so the correction is never seen as a jump. */
+  opacity: 0;
+  pointer-events: none;
+}
+
+.menu[data-placed='yes'] {
+  opacity: 1;
+  pointer-events: auto;
+  animation: menu-in 130ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-5px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.menu__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.menu__item:hover:not(:disabled),
+.menu__item:focus-visible:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  outline: none;
+}
+
+.menu__item:disabled {
+  opacity: 0.36;
+  cursor: default;
+}
+
+/* Shared leading slot, so chevrons, radio dots and checkmarks all sit on the
+   same optical axis the way they do in a native macOS menu. */
+.menu__mark {
+  flex: 0 0 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 12px;
+  position: relative;
+}
+
+.menu__mark--glyph {
+  font-size: 16px;
+  line-height: 1;
+  opacity: 0.68;
+}
+
+.menu__text {
+  flex: 1;
+}
+
+.menu__hint {
+  font-size: 11px;
+  opacity: 0.44;
+  font-variant-numeric: tabular-nums;
+  max-width: 96px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.menu__chevron {
+  flex: 0 0 auto;
+  margin-left: 2px;
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0.4;
+  transition: transform 160ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.menu__chevron[data-open='yes'] {
+  transform: rotate(90deg);
+}
+
+/* Segmented control — the native idiom for a short exclusive choice, and 66px
+   shorter than three radio rows. */
+.menu__segment {
+  display: flex;
+  gap: 2px;
+  margin: 2px 8px 7px;
+  padding: 2px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.menu__segment-item {
+  flex: 1;
+  padding: 6px 4px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.66);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition:
+    background 160ms ease,
+    color 160ms ease;
+}
+
+.menu__segment-item:hover:not(.is-on) {
+  color: #fff;
+}
+
+.menu__segment-item.is-on {
+  background: rgba(255, 255, 255, 0.92);
+  color: #16191e;
+  font-weight: 500;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.28);
+}
+
+/* City picker, revealed under "天气位置". */
+.menu__panel {
+  padding: 1px 8px 7px;
+}
+
+.menu__input {
+  width: 100%;
+  height: 30px;
+  padding: 0 9px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.07);
+  color: #fff;
+  font: inherit;
+  font-size: 12.5px;
+  outline: none;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease;
+}
+
+.menu__input::placeholder {
+  color: rgba(255, 255, 255, 0.38);
+}
+
+.menu__input:focus {
+  border-color: rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.menu__result {
+  display: block;
+  width: 100%;
+  margin-top: 3px;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.84);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.menu__result:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.menu__result--reset {
+  color: rgba(255, 255, 255, 0.52);
+}
+
+.menu__sep {
+  height: 1px;
+  margin: 5px 6px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.menu__caption {
+  padding: 6px 10px 5px;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  opacity: 0.52;
+}
+
+.menu__caption--row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.menu__value {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.95;
+}
+
+.menu__radio {
+  width: 11px;
+  height: 11px;
+  border: 1.5px solid rgba(255, 255, 255, 0.4);
+  border-radius: 50%;
+}
+
+.menu__radio[data-on='yes'] {
+  border-color: #fff;
+}
+
+.menu__radio[data-on='yes']::after {
+  content: '';
+  position: absolute;
+  inset: 2.5px;
+  border-radius: 50%;
+  background: #fff;
+}
+
+/* Leading checkmark, drawn from two borders rotated 45deg — no icon font, no
+   SVG, no extra request. */
+.menu__check::after {
+  content: '';
+  position: absolute;
+  left: 3.5px;
+  top: 0;
+  width: 5px;
+  height: 9px;
+  border-right: 1.7px solid #fff;
+  border-bottom: 1.7px solid #fff;
+  transform: rotate(45deg);
+  opacity: 0;
+  transition: opacity 130ms ease;
+}
+
+.menu__check[data-on='yes']::after {
+  opacity: 1;
+}
+
+.menu__slider {
+  -webkit-appearance: none;
+  appearance: none;
+  display: block;
+  width: calc(100% - 20px);
+  height: 3px;
+  margin: 3px 10px 9px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.22);
+  cursor: pointer;
+}
+
+.menu__slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 13px;
+  height: 13px;
+  border: 0;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+}
+
+.menu__slider:focus-visible {
+  outline: 1px solid rgba(255, 255, 255, 0.5);
+  outline-offset: 4px;
+}
+
+.menu__error {
+  padding: 6px 10px 8px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: #ffb3a7;
+}
+/* ═════════════════════════════════════════════════════════════════════════════
+   WEATHER
+   One quiet line under the date. Three pieces only — the rest of the data we
+   fetch lives in the tooltip rather than crowding the composition.
+   ═════════════════════════════════════════════════════════════════════════════ */
+
+.weather {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 1.9rem;
+  font-family: var(--font-ui);
+  color: rgba(255, 255, 255, 0.9);
+  text-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.5),
+    0 2px 18px rgba(0, 0, 0, 0.45);
+  cursor: default;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.weather__icon {
+  flex: 0 0 auto;
+  opacity: 0.92;
+}
+
+.weather__temp {
+  font-family: var(--font-clock);
+  font-weight: 300;
+  font-size: clamp(1.4rem, 2vw, 1.9rem);
+  line-height: 1;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: 'tnum' 1;
+}
+
+.weather__meta {
+  font-size: clamp(0.82rem, 1.05vw, 1rem);
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.weather__sep {
+  margin: 0 0.5em;
+  opacity: 0.45;
+}
+/* ═════════════════════════════════════════════════════════════════════════════
+   SEARCH
+   ═════════════════════════════════════════════════════════════════════════════ */
+
+.search {
+  position: relative;
+  width: min(560px, 78vw);
+  margin-top: 2.7rem;
+  font-family: var(--font-ui);
+}
+
+.search__bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 48px;
+  padding: 0 14px;
+  /* Full pill. */
+  border-radius: 24px;
+  background: rgba(22, 25, 30, 0.5);
+  backdrop-filter: blur(22px) saturate(150%);
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  box-shadow:
+    0 10px 34px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  transition:
+    background 200ms ease,
+    border-color 200ms ease,
+    box-shadow 200ms ease,
+    transform 220ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.search.is-focused .search__bar {
+  background: rgba(26, 30, 36, 0.7);
+  border-color: rgba(255, 255, 255, 0.22);
+  box-shadow:
+    0 16px 48px rgba(0, 0, 0, 0.42),
+    inset 0 1px 0 rgba(255, 255, 255, 0.09);
+  transform: translateY(-1px);
+}
+
+.search__glyph {
+  display: flex;
+  flex: 0 0 auto;
+  color: rgba(255, 255, 255, 0.5);
+  transition: color 200ms ease;
+}
+
+.search.is-focused .search__glyph {
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.search__input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: #fff;
+  font: inherit;
+  font-size: 15.5px;
+  line-height: 1;
+  outline: none;
+}
+
+.search__input::placeholder {
+  color: rgba(255, 255, 255, 0.42);
+}
+
+.search__clear {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.8);
+  cursor: pointer;
+  transition: background 160ms ease;
+}
+
+.search__clear:hover {
+  background: rgba(255, 255, 255, 0.24);
+}
+
+.search__drop {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  left: 0;
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  /* Backstop for short windows, where even the lifted column cannot fit the
+     whole list. Normally never reached. */
+  max-height: min(46vh, 340px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-radius: 15px;
+  background: rgba(22, 25, 30, 0.82);
+  backdrop-filter: blur(22px) saturate(150%);
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  box-shadow:
+    0 18px 52px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  animation: drop-in 150ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes drop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.search__row {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  padding: 9px 11px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.9);
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.search__row.is-active {
+  background: rgba(255, 255, 255, 0.11);
+}
+
+.search__row-glyph {
+  display: flex;
+  flex: 0 0 auto;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.search__row-glyph--ai {
+  color: #a9c7ff;
+}
+
+.search__row-text {
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Address-bar convention: the typed prefix stays plain, the completion is
+   emphasised, so the eye lands on what is new. */
+.search__row-text b {
+  font-weight: 600;
+  color: #fff;
+}
+
+.search__row-hint {
+  flex: 0 0 auto;
+  font-size: 11px;
+  opacity: 0.45;
+}
+
+.search__row--ai .search__row-text {
+  color: rgba(255, 255, 255, 0.84);
+}
+
+.search__drop-sep {
+  height: 1px;
+  margin: 5px 6px;
+  background: rgba(255, 255, 255, 0.1);
+}
+/* ═════════════════════════════════════════════════════════════════════════════
+   ATTRIBUTION
+   Required by the Unsplash API Guidelines; rendered only for Unsplash photos.
+   ═════════════════════════════════════════════════════════════════════════════ */
+
+.credit {
+  position: fixed;
+  right: 18px;
+  bottom: 14px;
+  z-index: 2;
+  font-family: var(--font-ui);
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
+  color: rgba(255, 255, 255, 0.46);
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.6);
+  transition: color 220ms ease;
+}
+
+.credit:hover {
+  color: rgba(255, 255, 255, 0.86);
+}
+
+.credit__link {
+  color: inherit;
+  text-decoration: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.22);
+}
+
+.credit__link:hover {
+  border-bottom-color: currentColor;
+}

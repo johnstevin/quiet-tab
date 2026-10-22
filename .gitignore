@@ -1,0 +1,26 @@
+# build output — regenerate with `npm run build`
+dist/
+
+# dependencies
+node_modules/
+
+# SECRETS — the Unsplash Access Key lives here. NEVER commit this.
+.env.local
+.env.*.local
+
+# 17.7 MB Noto Sans SC source, re-downloaded on demand by
+# scripts/make-date-font.mjs. Only the ~13KB subset is committed.
+.fontcache/
+
+# verification artifacts (screenshots, json reports, throwaway chrome profiles)
+.verify/
+
+# editor / OS noise
+.vscode/
+.idea/
+*.log
+Thumbs.db
+.DS_Store
+
+# NOTE: public/fonts/*.woff2 and public/images/*.png ARE committed on purpose —
+# the extension must render instantly and work offline. See README "Licensing".
