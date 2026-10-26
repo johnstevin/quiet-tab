@@ -8,7 +8,7 @@
 
 ## 安装
 
-未发布到 Chrome 商店，本地加载：
+尚未发布到 Chrome 网上应用店；当前只支持本地加载。上架前必须解决公开包内密钥保护、API 使用合规与真机联想词故障：
 
 ```bash
 npm install
@@ -87,11 +87,11 @@ npm run build
 
 该警告会直接报出 `chrome.permissions.contains()` 的结果，所以能一眼分清是权限问题还是网络问题。
 
-**已知并已修复的一个根因**：早期版本的 `host_permissions` 写成 `https://host/`。Chrome 的 match pattern **路径段是必需的**，`/` 只匹配根路径，不匹配 `/complete/search`。于是建议接口被当作普通跨域请求、报 CORS error。正确写法是 `https://host/*`。
+**待定位的真机问题**：曾在用户的 Chrome 中看到两个 Google 联想接口的 CORS 错误，自动化扩展态测试则能取到候选。先前将原因断定为 `host_permissions` 使用 `https://host/` 而不是 `https://host/*`，这个解释是错误的：Chrome 官方文档明确说明，主机权限的路径段虽必填，匹配时却会被忽略；两种写法授予相同主机。`/*` 仅是推荐写法，不能单凭修改它认定故障已修复。参见 [Chrome match patterns](https://developer.chrome.com/docs/extensions/develop/concepts/match-patterns)。
 
-这个 bug 在自动化测试里一直是绿的——Playwright 自带的 Chromium 对此宽容，真实 Chrome 不宽容。现已加入**无需浏览器的清单检查**（`npm run verify` 的 MANIFEST 段），断言每条模式都带路径通配、且代码实际请求的 8 个端点都被覆盖。
+`npm run verify` 的 MANIFEST 检查只确认权限模式的**主机与协议**覆盖了代码访问的域名；它不能证明用户浏览器已授权、请求没有被浏览器策略/其他扩展拦截、或非公开联想接口能稳定响应。上架前须在目标 Chrome 中对三个搜索引擎逐一复测，并保留请求失败的 Console 与 Network 证据。
 
-遇到权限类报错时：在 `chrome://extensions/` 把 Quiet Tab **移除**，再重新「加载已解压的扩展程序」选 `dist`。对已安装的未打包扩展，改动过的 `host_permissions` 不会随「刷新」生效。
+遇到权限类报错时：在 `chrome://extensions/` 检查 Quiet Tab 的「网站访问权限」是否允许目标域名，并查看警告中的 `chrome.permissions.contains()` 结果；若授权有变化，按 Chrome 提示重新授予。仅凭重复安装不能证明问题解决。
 
 其他可能：企业策略限制扩展的网络访问；或该域名在当前网络不可达（降级链会自动再试一次 `client=firefox`）。
 
@@ -152,7 +152,7 @@ npm run verify:ext   # 扩展模式：真机加载，CSP / 缓存 / 网络 / 署
 
 1. **Tailwind preflight 的 `img { max-width: 100% }`** 把背景图层的 `width: calc(100% + 224px)` 夹回了视口宽度 —— 出血只在纵向生效，左右两侧的模糊羽化边会露出来。修法：`max-width: none`。
 2. **Lightning CSS 丢弃了标准的 `backdrop-filter`**，只保留我手写的 `-webkit-` 前缀版。去掉手写前缀后工具链正确输出标准属性（5 处，0 个前缀）。
-3. **下拉列表被视口底部截断**：搜索框位于居中列底部，下方仅约 190px，装不下 8 行候选。修法：候选上限降到 6 + `.stage:has(.search.is-open)` 聚焦时整列上移 10vh + `max-height` 兜底。
+3. **下拉列表曾被视口底部截断**：最终采用静息态预留空间，并根据输入框下方的可用高度动态限制列表；聚焦时不会上移整列。
 4. **模糊出血量随模糊半径变化**导致背景跟着缩放平移 —— 图层是 `object-fit: cover`，尺寸一变就重新计算覆盖缩放。修法：出血量改为按 `BLUR_MAX` 一次性算定的常量。
 
 ---
@@ -204,12 +204,12 @@ quiet-tab/
 ```json
 "permissions": ["storage"],
 "host_permissions": [
-  "https://www.bing.com/",              // Bing 每日壁纸
-  "https://api.unsplash.com/",          // Unsplash 图片列表
-  "https://images.unsplash.com/",       // Unsplash 图片字节
-  "https://suggestqueries.google.com/", // Google 搜索建议
-  "https://api.bing.com/",              // Bing 搜索建议
-  "https://duckduckgo.com/"             // DuckDuckGo 搜索建议
+  "https://www.bing.com/*",              // Bing 每日壁纸
+  "https://api.unsplash.com/*",          // Unsplash 图片列表
+  "https://images.unsplash.com/*",       // Unsplash 图片字节
+  "https://suggestqueries.google.com/*", // Google 搜索建议
+  "https://api.bing.com/*",              // Bing 搜索建议
+  "https://duckduckgo.com/*"             // DuckDuckGo 搜索建议
 ]
 ```
 
@@ -227,7 +227,7 @@ quiet-tab/
 
 **Access Key 会被打进 bundle，任何人解压扩展或打开 DevTools 都能读到。** 这是纯前端应用的固有限制，不是配置问题。`.env.local` 被 gitignore 只能防止误提交到仓库，防不住产物泄漏。
 
-要真正隐藏，必须自建代理服务端转发 —— 这也是 Bonjourr 的做法（它有独立的 `bonjourr-apis` 仓库）。
+**当前含密钥的构建产物不得公开上架。** [Unsplash API Guidelines](https://help.unsplash.com/api-guidelines/unsplash-api-guidelines) 明确要求 Access Key 和 Secret Key 保密，客户端使用可能需要代理；对以 Unsplash 图片为主的壁纸体验还有[额外使用边界](https://help.unsplash.com/api-guidelines/guideline-replicating-unsplash)。发布前需由用户选择合规路线：取消应用内 Unsplash 集成，或在 Unsplash 确认该具体用途可行后使用安全代理并获得需要的生产配额；不能把现有本地密钥直接随扩展公开分发。
 
 本项目**只使用 Access Key**。Unsplash 的 Secret Key 仅用于 OAuth 用户授权流程（代表用户点赞、上传等），本项目完全不需要，代码中从未出现。
 
@@ -278,4 +278,4 @@ npm run typecheck
 
 ## 当前不做
 
-商店发布、12 小时制、模拟时钟表盘、快捷链接 Dock、问候语、农历节气、待办清单、多语言、Firefox/Edge 产物。
+商店发布待完成账号授权、Unsplash 合规方案与真机联想词复验；12 小时制、模拟时钟表盘、快捷链接 Dock、问候语、农历节气、待办清单、多语言、Firefox/Edge 产物暂不做。

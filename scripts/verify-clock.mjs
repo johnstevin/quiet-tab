@@ -15,7 +15,7 @@
 //     queue, so we land exactly on 23:59:58 instead of waiting for midnight.
 
 import { createServer } from 'node:http'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, extname, join, normalize, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -603,12 +603,10 @@ async function runUiChecks(browser, url) {
 /* ═══════════════════════════════════════════════════════════════════════════
    Manifest match patterns
 
-   Runs in both modes and needs no browser. Exists because of a real defect:
-   every host_permission was written as `https://host/`, which is a match
-   pattern whose path segment is just `/` — matching ONLY the root path, not
-   `/complete/search`. Chrome refused the suggestion requests with a CORS error
-   while Playwright's bundled Chromium allowed them, so every automated run was
-   green and only the real browser was broken.
+   Runs in both modes and needs no browser. It validates declared schemes and
+   hosts, NOT whether a request succeeds in the user's browser profile. Earlier
+   we incorrectly attributed a CORS report to a '/' host-permission path; the
+   official Chrome docs say this path is ignored. See README troubleshooting.
    ═══════════════════════════════════════════════════════════════════════════ */
 
 /** Endpoints the app actually reaches. Keep in sync with src/lib/. */
@@ -623,27 +621,18 @@ const REQUIRED_ENDPOINTS = [
   'https://duckduckgo.com/ac/?q=a&type=list',
 ]
 
-function escapeForRegExp(text) {
-  return text.replace(/[.+?^${}()|[\]\\]/g, '\\$&')
-}
-
-/** Minimal Chrome match-pattern evaluator, path semantics included. */
+/** For host_permissions Chrome ignores the path; only scheme and host matter. */
 function patternMatches(pattern, url) {
   const parsed = /^(\*|https?):\/\/(\*\.)?([^/*]*)(\/.*)$/.exec(pattern)
   if (!parsed) return false
-  const [, scheme, anySubdomain, host, path] = parsed
+  const [, scheme, anySubdomain, host] = parsed
 
   const target = new URL(url)
   if (scheme !== '*' && target.protocol !== `${scheme}:`) return false
-  if (host) {
-    const hostOk = anySubdomain
-      ? target.hostname === host || target.hostname.endsWith(`.${host}`)
-      : target.hostname === host
-    if (!hostOk) return false
-  }
-
-  const rx = new RegExp(`^${path.split('*').map(escapeForRegExp).join('.*')}$`)
-  return rx.test(target.pathname)
+  if (!host) return true
+  return anySubdomain
+    ? target.hostname === host || target.hostname.endsWith(`.${host}`)
+    : target.hostname === host
 }
 
 function checkManifestPatterns() {
@@ -658,15 +647,15 @@ function checkManifestPatterns() {
   const manifest = JSON.parse(readFileSync(manifestFile, 'utf8'))
   const patterns = manifest.host_permissions ?? []
 
-  const rootOnly = patterns.filter((p) => /^https?:\/\/[^/]+\/$/.test(p))
-  if (rootOnly.length === 0) {
-    pass(`all ${patterns.length} host patterns carry a path wildcard`)
+  const invalid = patterns.filter((p) => !/^(\*|https?):\/\/(\*\.)?[^/*]*(\/.*)$/.test(p))
+  if (invalid.length === 0) {
+    pass(`all ${patterns.length} host patterns have a valid scheme, host and path`)
   } else {
-    fail(
-      `host pattern(s) match only the root path — add "*": ${rootOnly.join(', ')}. ` +
-        'A match pattern\'s path is required; "https://host/" does not cover "/some/path".',
-    )
+    fail(`invalid host pattern(s): ${invalid.join(', ')}`)
   }
+  // Official Chrome documentation: the path is required but IGNORED for host
+  // permissions. '/' and '/*' grant the same host; only the latter is customary.
+  // This check does not prove that CORS or runtime site access works.
 
   const uncovered = REQUIRED_ENDPOINTS.filter(
     (url) => !patterns.some((p) => patternMatches(p, url)),
@@ -1203,8 +1192,11 @@ async function runExtension() {
     throw new Error('dist/manifest.json missing — run `npm run build` first')
   }
 
-  const profile = join(OUT, 'chrome-profile')
-  await mkdir(profile, { recursive: true })
+  // First-run network assertions need an empty profile on EVERY invocation.
+  // Reusing the previous one makes cached photos suppress API calls and yields
+  // false failures even though the application works correctly.
+  await mkdir(OUT, { recursive: true })
+  const profile = await mkdtemp(join(OUT, 'chrome-profile-'))
 
   // Extensions require a persistent context and a full (non-headless-shell)
   // browser. The viewport is pinned so the right-click coordinates below land
@@ -1831,8 +1823,7 @@ async function runExtension() {
 console.log(`\nquiet-tab verification — ${MODE} mode\n${'='.repeat(46)}\n`)
 
 try {
-  // Browser-free pre-flight; catches the class of defect that made every
-  // automated run green while the real browser was refused.
+  // Browser-free pre-flight checks declared hosts, not live network access.
   checkManifestPatterns()
   console.log('')
 
