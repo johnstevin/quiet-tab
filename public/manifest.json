@@ -12,12 +12,12 @@
   "permissions": ["storage"],
 
   "host_permissions": [
-    "https://www.bing.com/",
-    "https://api.unsplash.com/",
-    "https://images.unsplash.com/",
-    "https://suggestqueries.google.com/",
-    "https://api.bing.com/",
-    "https://duckduckgo.com/"
+    "https://www.bing.com/*",
+    "https://api.unsplash.com/*",
+    "https://images.unsplash.com/*",
+    "https://suggestqueries.google.com/*",
+    "https://api.bing.com/*",
+    "https://duckduckgo.com/*"
   ],
 
   "icons": {

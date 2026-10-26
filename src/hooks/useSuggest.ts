@@ -75,18 +75,36 @@ export function useSuggest(
         } catch (err) {
           if (controller.signal.aborted) return
 
-          // The UI stays silent — a new tab page must not show an error — but a
-          // failure with no trace at all made a real problem (no suggestions in
-          // one browser, working in another) impossible to diagnose. One
-          // concise warning in DevTools costs nothing visually.
+          // Self-diagnosing. A CORS error here means exactly one thing — Chrome
+          // did not apply the host permission to this request — and the only
+          // way to tell that apart from an ordinary network failure is to ask.
+          //
+          // Note the `/*`: a match pattern's path segment is required, and
+          // `https://host/` matches ONLY the root path. An earlier manifest
+          // used that form and the suggestion endpoints were refused in Chrome
+          // while still working under Playwright's bundled Chromium.
+          let permissionNote = '\n  host 权限：无法查询（非扩展环境）'
+          try {
+            if (typeof chrome !== 'undefined' && chrome.permissions) {
+              const origin = `${new URL(ENGINES[engine].suggestUrls[0]!(text)).origin}/*`
+              const held = await chrome.permissions.contains({ origins: [origin] })
+              permissionNote = held
+                ? `\n  host 权限：已授予 ${origin} —— 问题不在权限，` +
+                  '请检查网络是否能访问该域名。'
+                : `\n  host 权限：未授予 ${origin}\n` +
+                  '  → 在 chrome://extensions 把本扩展「移除」后重新「加载已解压的扩展程序」。' +
+                  '对已安装的未打包扩展，新增或改动的 host_permissions 不会随「刷新」生效。'
+            }
+          } catch {
+            /* keep the default note */
+          }
+
           console.warn(
             '[quiet-tab] 搜索建议请求失败：',
             err instanceof Error ? err.message : err,
             '\n  已尝试的端点：\n    ' +
               ENGINES[engine].suggestUrls.map((build) => build(text)).join('\n    '),
-            '\n  若报 CORS / 权限错误：请在 chrome://extensions 把本扩展「移除」后重新' +
-              '「加载已解压的扩展程序」。对已安装的未打包扩展，新增的 host_permissions ' +
-              '不一定随「刷新」生效。',
+            permissionNote,
           )
         }
       })()

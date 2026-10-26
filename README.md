@@ -85,11 +85,15 @@ npm run build
 1. 在新标签页上右键 → 检查（或 `Ctrl+Shift+J`）
 2. 看 Console 里 `[quiet-tab] 搜索建议请求失败：` 开头的那条警告
 
-最常见的原因：**对已安装的未打包扩展，新增的 `host_permissions` 不一定随「刷新」生效。** 本项目在加入搜索功能时新增了 3 个主机权限，如果你的扩展是在那之前加载的，刷新按钮可能不会补授权。
+该警告会直接报出 `chrome.permissions.contains()` 的结果，所以能一眼分清是权限问题还是网络问题。
 
-解决：在 `chrome://extensions/` 把 Quiet Tab **移除**，再重新「加载已解压的扩展程序」选 `dist`。
+**已知并已修复的一个根因**：早期版本的 `host_permissions` 写成 `https://host/`。Chrome 的 match pattern **路径段是必需的**，`/` 只匹配根路径，不匹配 `/complete/search`。于是建议接口被当作普通跨域请求、报 CORS error。正确写法是 `https://host/*`。
 
-其他可能：企业策略限制扩展的网络访问；或 `suggestqueries.google.com` 在当前网络不可达（降级链会自动再试一次 `client=firefox`）。
+这个 bug 在自动化测试里一直是绿的——Playwright 自带的 Chromium 对此宽容，真实 Chrome 不宽容。现已加入**无需浏览器的清单检查**（`npm run verify` 的 MANIFEST 段），断言每条模式都带路径通配、且代码实际请求的 8 个端点都被覆盖。
+
+遇到权限类报错时：在 `chrome://extensions/` 把 Quiet Tab **移除**，再重新「加载已解压的扩展程序」选 `dist`。对已安装的未打包扩展，改动过的 `host_permissions` 不会随「刷新」生效。
+
+其他可能：企业策略限制扩展的网络访问；或该域名在当前网络不可达（降级链会自动再试一次 `client=firefox`）。
 
 ### 新标签页还是 Chrome 原来那个
 

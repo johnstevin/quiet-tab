@@ -16,7 +16,7 @@
 
 import { createServer } from 'node:http'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { dirname, extname, join, normalize, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright'
@@ -597,6 +597,93 @@ async function runUiChecks(browser, url) {
     stageOpen,
     weather,
     consoleErrors,
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Manifest match patterns
+
+   Runs in both modes and needs no browser. Exists because of a real defect:
+   every host_permission was written as `https://host/`, which is a match
+   pattern whose path segment is just `/` — matching ONLY the root path, not
+   `/complete/search`. Chrome refused the suggestion requests with a CORS error
+   while Playwright's bundled Chromium allowed them, so every automated run was
+   green and only the real browser was broken.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/** Endpoints the app actually reaches. Keep in sync with src/lib/. */
+const REQUIRED_ENDPOINTS = [
+  'https://www.bing.com/HPImageArchive.aspx?format=js&idx=0&n=8',
+  'https://www.bing.com/th?id=OHR.Example_UHD.jpg',
+  'https://api.unsplash.com/photos/random?count=12',
+  'https://api.unsplash.com/photos/abc/download',
+  'https://images.unsplash.com/photo-123?w=2560',
+  'https://suggestqueries.google.com/complete/search?client=chrome&q=a',
+  'https://api.bing.com/osjson.aspx?query=a',
+  'https://duckduckgo.com/ac/?q=a&type=list',
+]
+
+function escapeForRegExp(text) {
+  return text.replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/** Minimal Chrome match-pattern evaluator, path semantics included. */
+function patternMatches(pattern, url) {
+  const parsed = /^(\*|https?):\/\/(\*\.)?([^/*]*)(\/.*)$/.exec(pattern)
+  if (!parsed) return false
+  const [, scheme, anySubdomain, host, path] = parsed
+
+  const target = new URL(url)
+  if (scheme !== '*' && target.protocol !== `${scheme}:`) return false
+  if (host) {
+    const hostOk = anySubdomain
+      ? target.hostname === host || target.hostname.endsWith(`.${host}`)
+      : target.hostname === host
+    if (!hostOk) return false
+  }
+
+  const rx = new RegExp(`^${path.split('*').map(escapeForRegExp).join('.*')}$`)
+  return rx.test(target.pathname)
+}
+
+function checkManifestPatterns() {
+  console.log('MANIFEST')
+
+  const manifestFile = join(DIST, 'manifest.json')
+  if (!existsSync(manifestFile)) {
+    fail('dist/manifest.json missing — run `npm run build` first')
+    return
+  }
+
+  const manifest = JSON.parse(readFileSync(manifestFile, 'utf8'))
+  const patterns = manifest.host_permissions ?? []
+
+  const rootOnly = patterns.filter((p) => /^https?:\/\/[^/]+\/$/.test(p))
+  if (rootOnly.length === 0) {
+    pass(`all ${patterns.length} host patterns carry a path wildcard`)
+  } else {
+    fail(
+      `host pattern(s) match only the root path — add "*": ${rootOnly.join(', ')}. ` +
+        'A match pattern\'s path is required; "https://host/" does not cover "/some/path".',
+    )
+  }
+
+  const uncovered = REQUIRED_ENDPOINTS.filter(
+    (url) => !patterns.some((p) => patternMatches(p, url)),
+  )
+  if (uncovered.length === 0) {
+    pass(`all ${REQUIRED_ENDPOINTS.length} endpoints the app calls are covered by a pattern`)
+  } else {
+    fail(`endpoint(s) not covered by any host pattern:\n      ${uncovered.join('\n      ')}`)
+  }
+
+  // Open-Meteo is deliberately absent: it answers with
+  // `Access-Control-Allow-Origin: *`, so it needs no permission and declaring
+  // one would only add a line to the install warning.
+  if (patterns.some((p) => p.includes('open-meteo'))) {
+    notes.push('open-meteo is in host_permissions but does not need to be (it sends CORS headers)')
+  } else {
+    pass('open-meteo correctly omitted — it sends CORS headers, so no permission is needed')
   }
 }
 
@@ -1744,6 +1831,11 @@ async function runExtension() {
 console.log(`\nquiet-tab verification — ${MODE} mode\n${'='.repeat(46)}\n`)
 
 try {
+  // Browser-free pre-flight; catches the class of defect that made every
+  // automated run green while the real browser was refused.
+  checkManifestPatterns()
+  console.log('')
+
   if (MODE === 'extension') await runExtension()
   else await runStatic()
 } catch (err) {
