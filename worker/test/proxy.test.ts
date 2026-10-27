@@ -55,6 +55,18 @@ test('isValidDownloadLocation accepts only Unsplash download endpoints', () => {
   )
 })
 
+test('isValidDownloadLocation accepts the exact download_location from Unsplash docs', () => {
+  // Copied verbatim from
+  // https://help.unsplash.com/api-guidelines/guideline-triggering-a-download
+  // The guideline requires every query parameter (ixid) to be kept, so rejecting
+  // a genuine value would silently break download tracking for every photo.
+  const official =
+    'https://api.unsplash.com/photos/LBI7cgq3pbM/download?ixid=MnwxMTc4ODl8MHwxfHNlYXJjaHwxfHxwdXBweXxlbnwwfHx8fDE2MTc3NTA2MTM'
+  assert.equal(isValidDownloadLocation(official), true)
+  // The forwarded string must be unchanged, query included.
+  assert.equal(new URL(official).search, '?ixid=MnwxMTc4ODl8MHwxfHNlYXJjaHwxfHxwdXBweXxlbnwwfHx8fDE2MTc3NTA2MTM')
+})
+
 test('isValidDownloadLocation blocks SSRF and open-relay attempts', () => {
   const bad = [
     'http://api.unsplash.com/photos/AbC123xyz/download', // not https
