@@ -15,86 +15,28 @@
  *   One Demo-tier Unsplash application allows 50 requests/hour, shared by EVERY
  *   user of the extension. Caching the photo list at the edge is therefore not
  *   an optimisation, it is what keeps the service alive.
+ *
+ * NOTE: this entry module must export ONLY the default handler. Helpers live in
+ * ./lib.ts; see the comment there for why.
  */
 
-export interface Env {
+import {
+  BATCH_BUCKETS,
+  BATCH_TTL_S,
+  buildPhotosUrl,
+  clampCount,
+  isOriginAllowed,
+  isValidDownloadLocation,
+} from './lib.ts'
+
+interface Env {
   /** Secret. Set with `wrangler secret put UNSPLASH_ACCESS_KEY`. */
   UNSPLASH_ACCESS_KEY: string
   /** Comma-separated chrome-extension IDs allowed to call. Empty = any extension. */
   ALLOWED_EXTENSION_IDS?: string
 }
 
-const UPSTREAM = 'https://api.unsplash.com'
-const UPSTREAM_HOST = 'api.unsplash.com'
-
-/** Seconds a shared photo batch stays cached at the edge. */
-export const BATCH_TTL_S = 30 * 60
-/** Distinct cache slots, so one shared response does not mean one shared photo set forever. */
-export const BATCH_BUCKETS = 6
-/** Queries the extension may ask for. Fixed so callers cannot steer the proxy. */
-export const FIXED_QUERY = 'landscape,mountain,nature,forest'
-export const MAX_COUNT = 30
-
 const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8' }
-
-/* ── pure helpers (unit-testable without a Workers runtime) ─────────────────── */
-
-/** Extension origin check. `chrome-extension://<32 chars a-p>`. */
-export function parseExtensionId(origin: string | null): string | null {
-  if (!origin) return null
-  const m = /^chrome-extension:\/\/([a-p]{32})$/.exec(origin)
-  return m ? m[1]! : null
-}
-
-export function isOriginAllowed(origin: string | null, allowList: string | undefined): boolean {
-  const id = parseExtensionId(origin)
-  if (!id) return false
-  const allowed = (allowList ?? '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean)
-  // An empty list means "any Chrome extension", needed while the extension ID
-  // is not yet known (unpacked builds get a machine-specific ID).
-  return allowed.length === 0 || allowed.includes(id)
-}
-
-export function clampCount(raw: string | null): number {
-  const n = Number.parseInt(raw ?? '', 10)
-  if (!Number.isFinite(n)) return 12
-  return Math.min(Math.max(n, 1), MAX_COUNT)
-}
-
-/**
- * The only download-tracking URLs we will forward: Unsplash's own
- * `/photos/<id>/download` endpoint over https. Rejects every other host, which
- * is what stops this from being used as an SSRF / open relay.
- */
-export function isValidDownloadLocation(raw: string): boolean {
-  let u: URL
-  try {
-    u = new URL(raw)
-  } catch {
-    return false
-  }
-  return (
-    u.protocol === 'https:' &&
-    u.hostname === UPSTREAM_HOST &&
-    u.port === '' &&
-    u.username === '' &&
-    u.password === '' &&
-    /^\/photos\/[A-Za-z0-9_-]{6,32}\/download$/.test(u.pathname)
-  )
-}
-
-/** Build the upstream URL for a photo batch. Every parameter is fixed or clamped. */
-export function buildPhotosUrl(count: number): string {
-  const u = new URL('/photos/random', UPSTREAM)
-  u.searchParams.set('count', String(count))
-  u.searchParams.set('orientation', 'landscape')
-  u.searchParams.set('content_filter', 'high')
-  u.searchParams.set('query', FIXED_QUERY)
-  return u.toString()
-}
 
 function corsHeaders(origin: string): Record<string, string> {
   return {
@@ -110,8 +52,6 @@ function corsHeaders(origin: string): Record<string, string> {
 function json(body: unknown, status: number, extra: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), { status, headers: { ...JSON_HEADERS, ...extra } })
 }
-
-/* ── handlers ───────────────────────────────────────────────────────────────── */
 
 async function handlePhotos(
   url: URL,
@@ -141,7 +81,7 @@ async function handlePhotos(
     },
   })
 
-  // Pass upstream status through (403 = hourly quota gone), but never the key,
+  // Pass upstream status through (403 = hourly quota gone), but never the key and
   // never upstream headers wholesale. Only the rate-limit counters, which are
   // useful to the client and not sensitive.
   const passHeaders: Record<string, string> = { ...JSON_HEADERS, ...cors, 'x-proxy-cache': 'MISS' }

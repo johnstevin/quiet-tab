@@ -9,7 +9,7 @@ import {
   isOriginAllowed,
   isValidDownloadLocation,
   parseExtensionId,
-} from '../src/index.ts'
+} from '../src/lib.ts'
 
 const EXT = 'abcdefghijklmnopabcdefghijklmnop' // 32 chars, a-p
 
