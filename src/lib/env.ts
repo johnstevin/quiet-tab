@@ -46,8 +46,24 @@ export function isExtensionRuntime(): boolean {
  */
 export const UNSPLASH_ACCESS_KEY: string = import.meta.env.VITE_UNSPLASH_ACCESS_KEY ?? ''
 
+/**
+ * Base URL of the Unsplash proxy Worker (see worker/), without a trailing slash.
+ *
+ * When present it takes precedence over a direct connection, and the build is
+ * required to carry no Access Key (vite.config.ts refuses to build otherwise).
+ * That combination is what a published build uses.
+ */
+export const UNSPLASH_PROXY_URL: string = (import.meta.env.VITE_UNSPLASH_PROXY_URL ?? '')
+  .trim()
+  .replace(/\/+$/, '')
+
+export function usesUnsplashProxy(): boolean {
+  return UNSPLASH_PROXY_URL.length > 0
+}
+
+/** True when Unsplash can be reached at all: through the proxy or directly. */
 export function hasUnsplashKey(): boolean {
-  return UNSPLASH_ACCESS_KEY.length > 0
+  return usesUnsplashProxy() || UNSPLASH_ACCESS_KEY.length > 0
 }
 
 /** Used for the UTM parameters Unsplash's attribution guidelines ask for. */

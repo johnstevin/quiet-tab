@@ -1,12 +1,47 @@
-import { defineConfig } from 'vite'
+import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+
+/**
+ * Refuse to produce a bundle that would leak the Unsplash Access Key while
+ * claiming to be the proxied (publishable) configuration.
+ *
+ * Two build flavours exist:
+ *   - personal : VITE_UNSPLASH_ACCESS_KEY set, no proxy. Key is in the bundle.
+ *                Fine on your own machine, never to be distributed.
+ *   - publish  : VITE_UNSPLASH_PROXY_URL set, NO key. Safe to distribute.
+ *
+ * Setting both is the dangerous mistake: it looks like the publish flavour but
+ * ships the key anyway. Vite inlines every VITE_* variable, so the only
+ * reliable guard is to stop the build.
+ */
+function assertNoKeyLeakWithProxy(mode: string): void {
+  const env = loadEnv(mode, process.cwd(), 'VITE_')
+  const key = (env.VITE_UNSPLASH_ACCESS_KEY ?? '').trim()
+  const proxy = (env.VITE_UNSPLASH_PROXY_URL ?? '').trim()
+
+  if (proxy && key) {
+    throw new Error(
+      '\n[quiet-tab] Refusing to build: VITE_UNSPLASH_PROXY_URL and ' +
+        'VITE_UNSPLASH_ACCESS_KEY are both set.\n' +
+        '  A proxied build must not contain the Access Key (Vite would inline it).\n' +
+        '  For a publishable build, remove VITE_UNSPLASH_ACCESS_KEY from the\n' +
+        '  environment (including .env.local). For a personal build, remove\n' +
+        '  VITE_UNSPLASH_PROXY_URL.\n',
+    )
+  }
+  if (proxy && !/^https:\/\/[^\s/]+(\/[^\s]*)?$/.test(proxy)) {
+    throw new Error(`[quiet-tab] VITE_UNSPLASH_PROXY_URL must be an https URL, got "${proxy}"`)
+  }
+}
 
 // Chrome MV3 extension pages run under the default CSP
 //   script-src 'self'; object-src 'self'
 // which forbids inline <script> and remote code. Every build option below
 // exists to keep the emitted bundle inside that box.
-export default defineConfig({
+export default defineConfig(({ mode }) => {
+  assertNoKeyLeakWithProxy(mode)
+  return {
   plugins: [react(), tailwindcss()],
 
   build: {
@@ -46,4 +81,5 @@ export default defineConfig({
   server: {
     port: 5173,
   },
+  }
 })

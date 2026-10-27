@@ -1,4 +1,4 @@
-import { APP_NAME, UNSPLASH_ACCESS_KEY } from '../env'
+import { APP_NAME, UNSPLASH_ACCESS_KEY, UNSPLASH_PROXY_URL, usesUnsplashProxy } from '../env'
 import type { Photo } from '../types'
 
 /**
@@ -74,23 +74,34 @@ function withUtm(url: string): string {
 }
 
 export async function fetchUnsplashPhotos(count: number, signal?: AbortSignal): Promise<Photo[]> {
-  if (!UNSPLASH_ACCESS_KEY) throw new Error('未配置 Unsplash Access Key（见 .env.example）')
+  const clamped = Math.max(1, Math.min(count, 30))
+  const viaProxy = usesUnsplashProxy()
 
-  const url =
-    `${API}/photos/random?count=${Math.max(1, Math.min(count, 30))}` +
-    `&orientation=landscape&content_filter=high&query=${encodeURIComponent(QUERY)}`
+  if (!viaProxy && !UNSPLASH_ACCESS_KEY) {
+    throw new Error('未配置 Unsplash（需要代理地址或本地 Access Key，见 .env.example）')
+  }
+
+  // Proxy: the Worker fixes query/orientation/filter itself, so only `count` is
+  // sent. Direct: the same parameters are built here, with the key in a header.
+  const url = viaProxy
+    ? `${UNSPLASH_PROXY_URL}/photos?count=${clamped}`
+    : `${API}/photos/random?count=${clamped}` +
+      `&orientation=landscape&content_filter=high&query=${encodeURIComponent(QUERY)}`
 
   const res = await fetch(url, {
-    headers: authHeaders(),
+    ...(viaProxy ? {} : { headers: authHeaders() }),
     cache: 'no-store',
     ...(signal ? { signal } : {}),
   })
 
   if (res.status === 403) {
-    // Unsplash answers 403 (not 429) when the hourly allowance is gone.
+    // Unsplash answers 403 (not 429) when the hourly allowance is gone. Through
+    // the proxy that allowance is shared by every user, so say so.
     const remaining = res.headers.get('x-ratelimit-remaining')
     throw new Error(
-      `Unsplash 请求配额已用尽（Demo 版 50 次/小时，剩余 ${remaining ?? '0'}），稍后再试或切回 Bing`,
+      viaProxy
+        ? 'Unsplash 共享配额已用尽（所有用户共用，Demo 版 50 次/小时），稍后再试或切回 Bing'
+        : `Unsplash 请求配额已用尽（Demo 版 50 次/小时，剩余 ${remaining ?? '0'}），稍后再试或切回 Bing`,
     )
   }
   if (res.status === 401) throw new Error('Unsplash Access Key 无效或已被撤销')
@@ -133,8 +144,19 @@ export async function fetchUnsplashPhotos(count: number, signal?: AbortSignal): 
  * hourly rate limit.
  */
 export async function pingUnsplashDownload(downloadLocation: string): Promise<void> {
-  if (!UNSPLASH_ACCESS_KEY) return
   try {
+    if (usesUnsplashProxy()) {
+      // The Worker holds the key and validates that the target really is an
+      // Unsplash download endpoint, so the extension never needs to.
+      await fetch(`${UNSPLASH_PROXY_URL}/download`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ downloadLocation }),
+        cache: 'no-store',
+      })
+      return
+    }
+    if (!UNSPLASH_ACCESS_KEY) return
     await fetch(downloadLocation, { headers: authHeaders(), cache: 'no-store' })
   } catch {
     // Offline or blocked; nothing actionable.

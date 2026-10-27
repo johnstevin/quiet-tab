@@ -1,0 +1,12 @@
+# Local Worker secrets. `wrangler dev` reads these; they hold REAL keys.
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+.env
+.env.*
+!.env.example
+
+# Wrangler local state and build output
+.wrangler/
+node_modules/
+dist/

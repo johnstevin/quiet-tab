@@ -1,0 +1,11 @@
+# Local development only. Copy to `.dev.vars` (gitignored) and fill in.
+#
+# For a deployed Worker the key is NOT stored in a file at all:
+#   npx wrangler secret put UNSPLASH_ACCESS_KEY
+#
+# Only the ACCESS key is needed. Never put the Secret Key here.
+UNSPLASH_ACCESS_KEY=
+
+# Optional: comma-separated chrome-extension IDs allowed to call this Worker.
+# Empty = any Chrome extension (needed until the published extension ID is known).
+ALLOWED_EXTENSION_IDS=
