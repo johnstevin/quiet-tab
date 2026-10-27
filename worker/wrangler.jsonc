@@ -4,5 +4,11 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
   "workers_dev": true,
+  "routes": [
+    {
+      "pattern": "quiet-tab-api.fgglog.ccwu.cc",
+      "custom_domain": true
+    }
+  ],
   "observability": { "enabled": true }
 }

@@ -151,7 +151,9 @@ export default {
 
     if (!env.UNSPLASH_ACCESS_KEY) return json({ error: 'not_configured' }, 500, cors)
 
-    if (url.pathname === '/photos' && request.method === 'GET') {
+    // POST is the extension-facing read operation: Chrome supplies Origin for
+    // POST but not extension GET. Both methods share validation and edge cache.
+    if (url.pathname === '/photos' && (request.method === 'GET' || request.method === 'POST')) {
       return handlePhotos(url, env, ctx, cors)
     }
     if (url.pathname === '/download' && request.method === 'POST') {

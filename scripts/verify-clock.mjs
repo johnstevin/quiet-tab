@@ -36,6 +36,7 @@ const MODE = process.argv.includes('--mode=extension') ? 'extension' : 'static'
  * rather than guess.
  */
 const USE_REAL_CHROME = process.argv.includes('--chrome')
+const PROXY_URL = (process.argv.find((arg) => arg.startsWith('--proxy='))?.slice(8) ?? '').replace(/\/$/, '')
 
 /* ═══════════════════════════════════════════════════════════════════════════
    Test matrix
@@ -657,11 +658,15 @@ function checkManifestPatterns() {
   // permissions. '/' and '/*' grant the same host; only the latter is customary.
   // This check does not prove that CORS or runtime site access works.
 
-  const uncovered = REQUIRED_ENDPOINTS.filter(
+  const endpoints = REQUIRED_ENDPOINTS.map((url) => {
+    if (!PROXY_URL || !url.startsWith('https://api.unsplash.com/')) return url
+    return url.includes('/download') ? `${PROXY_URL}/download` : `${PROXY_URL}/photos?count=12`
+  })
+  const uncovered = endpoints.filter(
     (url) => !patterns.some((p) => patternMatches(p, url)),
   )
   if (uncovered.length === 0) {
-    pass(`all ${REQUIRED_ENDPOINTS.length} endpoints the app calls are covered by a pattern`)
+    pass(`all ${endpoints.length} endpoints the app calls are covered by a pattern`)
   } else {
     fail(`endpoint(s) not covered by any host pattern:\n      ${uncovered.join('\n      ')}`)
   }
@@ -1229,13 +1234,24 @@ async function runExtension() {
 
   const cspViolations = []
   const consoleErrors = []
-  const hits = { bing: 0, unsplashApi: 0, unsplashImg: 0 }
+  const hits = { bing: 0, unsplashApi: 0, unsplashImg: 0, proxy: 0 }
+  let successfulDownloadPings = 0
+  context.on('response', (response) => {
+    const url = response.url()
+    const isDownload = PROXY_URL
+      ? url === `${PROXY_URL}/download` && response.request().method() === 'POST'
+      : url.startsWith('https://api.unsplash.com/') && url.includes('/download')
+    if (isDownload && response.ok()) successfulDownloadPings += 1
+  })
   /** Direct evidence that the Unsplash download-report endpoint was called. */
   let downloadPings = 0
 
   context.on('request', (req) => {
     const u = req.url()
-    if (u.includes('bing.com')) hits.bing += 1
+    if (PROXY_URL && u.startsWith(PROXY_URL + '/')) {
+      hits.proxy += 1
+      if (u === `${PROXY_URL}/download` && req.method() === 'POST') downloadPings += 1
+    } else if (u.includes('bing.com')) hits.bing += 1
     else if (u.includes('api.unsplash.com')) {
       hits.unsplashApi += 1
       // e.g. https://api.unsplash.com/photos/<id>/download?ixid=...
@@ -1346,7 +1362,10 @@ async function runExtension() {
     if (unsplashPool > 1) pass(`Unsplash pool holds ${unsplashPool} photos (enables prev/next)`)
     else fail(`Unsplash pool holds only ${unsplashPool} photo(s)`)
 
-    if (hits.unsplashApi > 0) pass(`api.unsplash.com called ${hits.unsplashApi}x on first run`)
+    if (PROXY_URL) {
+      if (hits.proxy > 0 && hits.unsplashApi === 0) pass('Unsplash uses the proxy only; no direct API request from the extension')
+      else fail(`proxy request isolation failed (proxy=${hits.proxy}, direct=${hits.unsplashApi})`)
+    } else if (hits.unsplashApi > 0) pass(`api.unsplash.com called ${hits.unsplashApi}x on first run`)
     else fail('api.unsplash.com was never called')
 
     /* ── attribution (Unsplash API Terms) ──────────────────────────────────── */
@@ -1369,14 +1388,14 @@ async function runExtension() {
         const bag = await chrome.storage.local.get('pingedPhotoIds')
         return Array.isArray(bag.pingedPhotoIds) ? bag.pingedPhotoIds.length : 0
       })
-      if (pingedCount > 0) break
+      if (pingedCount > 0 && successfulDownloadPings > 0) break
       await page.waitForTimeout(500)
     }
 
-    if (pingedCount > 0 && downloadPings > 0) {
+    if (pingedCount > 0 && downloadPings > 0 && successfulDownloadPings > 0) {
       pass(
-        `download_location pinged: ${downloadPings} request(s) sent, ${pingedCount} photo(s) ` +
-          'recorded — Unsplash requirement met',
+        `download_location pinged: ${downloadPings} sent, ${successfulDownloadPings} HTTP success, ${pingedCount} photo(s) ` +
+          'recorded',
       )
     } else {
       fail(
@@ -1440,10 +1459,6 @@ async function runExtension() {
 
     if (suggestHits > 0) pass(`suggestion endpoint called ${suggestHits}x while typing`)
     else fail('no request reached the suggestion endpoint')
-
-    if (failedRequests.length > 0) {
-      fail(`network request(s) failed: ${failedRequests.slice(0, 3).join(' | ')}`)
-    }
 
     if (failedRequests.length > 0) {
       fail(`network request(s) failed: ${failedRequests.slice(0, 3).join(' | ')}`)
@@ -1754,11 +1769,12 @@ async function runExtension() {
     hits.unsplashApi = 0
     hits.unsplashImg = 0
     hits.bing = 0
+    hits.proxy = 0
     const second = await context.newPage()
     await second.goto(extUrl, { waitUntil: 'load' })
     await second.waitForSelector('[data-testid="clock"]')
     await second.waitForTimeout(5000)
-    const netTotal = hits.unsplashApi + hits.unsplashImg + hits.bing
+    const netTotal = hits.unsplashApi + hits.unsplashImg + hits.bing + hits.proxy
     if (netTotal === 0) {
       pass('a second tab made 0 network requests — pool + byte cache both hit')
     } else {

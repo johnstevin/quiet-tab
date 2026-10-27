@@ -18,7 +18,7 @@ Get Unsplash's written answer on that before distributing.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/photos?count=12` | A batch of random landscape photos. Query, orientation and filter are fixed server-side. |
+| `POST` (extension) / `GET` (explicit Origin) | `/photos?count=12` | Read a batch of landscape photos. Chrome omits Origin on extension GET requests, so the extension uses POST; both methods share the same fixed upstream and cache. |
 | `POST` | `/download` | Body `{"downloadLocation": "https://api.unsplash.com/photos/<id>/download"}`. Records the download, as the guidelines require. |
 | `GET` | `/health` | Liveness. Needs no origin, returns no data. |
 
@@ -31,13 +31,14 @@ Everything else is `404`. Requests must carry an `Origin` of the form
 
 | Endpoint | Upstream cost | Why |
 |---|---|---|
-| `GET /photos` | ~12 requests/hour, **regardless of user count** | Cached at the edge for 30 min across 6 buckets (6 buckets x 2 refreshes/hour). Simulated: 5 to 10,000 calls/hour all settle at ~12 upstream/hour. |
+| `/photos` | Approximately 12 requests/hour **per active edge location and distinct count value**, after warming | Cached for 30 min across 6 buckets. Cache API is local to each Cloudflare edge location; concurrent cold misses can cause additional upstream calls. This is not a global quota limit. |
 | `POST /download` | **1 per photo per user** | Deliberately NOT cached or de-duplicated. |
 
-Demo allows 50 requests/hour in total, shared by every user. That leaves about
-38/hour for `/download`. As a rough guide, with each user viewing about 3 new
-photos a day, **the Demo tier supports roughly 100 daily-active users**; at 12
-new photos a day per user it supports only a few dozen.
+Demo allows 50 requests/hour in total, shared by every user. The remaining
+budget for `/download` depends on edge-location spread, batch sizes, cold
+misses and peak traffic. Do not infer a guaranteed daily-active-user capacity
+from a single-location simulation. Public-scale use needs quota monitoring and
+an approved Production application before traffic outgrows the Demo budget.
 
 Why `/download` is not de-duplicated: Unsplash's
 [guideline](https://help.unsplash.com/api-guidelines/guideline-triggering-a-download)
@@ -46,9 +47,9 @@ event in Google Analytics", that feeds photographers' download numbers.
 Collapsing many users' use of one photo into a single call would under-report
 their work. The guideline does not permit it, so the Worker does not do it.
 
-Going beyond roughly 100 users therefore requires **Production status**
-(1,000 requests/hour), which Unsplash grants on review, and that review is also
-where the "wallpaper app" rule above is applied.
+**Production status** increases the default allowance (subject to Unsplash's
+current approval terms). It does not replace confirmation that this specific
+background integration complies with the API guidelines.
 
 Workers Free itself is not the constraint: 100,000 requests/day, 10 ms CPU per
 request.
@@ -63,13 +64,17 @@ npx wrangler secret put UNSPLASH_ACCESS_KEY     # paste the ACCESS key, never th
 npx wrangler deploy
 ```
 
-Wrangler prints the Worker's URL (`https://quiet-tab-unsplash-proxy.<subdomain>.workers.dev`).
+This deployment uses **https://quiet-tab-api.fgglog.ccwu.cc**. The configuration
+adds that exact hostname as a Custom Domain, without changing the zone's apex
+homepage or other Workers. Cloudflare manages its DNS record and TLS certificate.
+`GET /health` should return `{"ok":true}`. Requests to the other endpoints without
+an extension Origin intentionally return 403.
 
 Then build the extension against it, with **no** Access Key in the environment:
 
 ```bash
 # .env.local
-VITE_UNSPLASH_PROXY_URL=https://quiet-tab-unsplash-proxy.<subdomain>.workers.dev
+VITE_UNSPLASH_PROXY_URL=https://quiet-tab-api.fgglog.ccwu.cc
 # VITE_UNSPLASH_ACCESS_KEY must be empty or absent
 npm run build
 ```

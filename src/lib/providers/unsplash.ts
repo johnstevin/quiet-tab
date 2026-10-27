@@ -89,7 +89,9 @@ export async function fetchUnsplashPhotos(count: number, signal?: AbortSignal): 
       `&orientation=landscape&content_filter=high&query=${encodeURIComponent(QUERY)}`
 
   const res = await fetch(url, {
-    ...(viaProxy ? {} : { headers: authHeaders() }),
+    // Chrome omits Origin on extension GET requests even in cors mode. POST
+    // carries the browser-generated Origin, preserving the Worker's checks.
+    ...(viaProxy ? { method: 'POST' } : { headers: authHeaders() }),
     cache: 'no-store',
     ...(signal ? { signal } : {}),
   })

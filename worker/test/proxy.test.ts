@@ -11,7 +11,58 @@ import {
   parseExtensionId,
 } from '../src/lib.ts'
 
+import worker from '../src/index.ts'
+
 const EXT = 'abcdefghijklmnopabcdefghijklmnop' // 32 chars, a-p
+
+test('photo POST requires Origin and shares the fixed upstream and edge cache', async () => {
+  const oldFetch = globalThis.fetch
+  const oldCaches = Object.getOwnPropertyDescriptor(globalThis, 'caches')
+  const calls: string[] = []
+  const stored: Promise<unknown>[] = []
+  const entries = new Map<string, Response>()
+  const oldRandom = Math.random
+  Math.random = () => 0
+  Object.defineProperty(globalThis, 'caches', {
+    configurable: true,
+    value: { default: {
+      match: async (request: Request) => entries.get(request.url)?.clone(),
+      put: async (request: Request, response: Response) => { entries.set(request.url, response.clone()) },
+    } },
+  })
+  globalThis.fetch = async (input, init) => {
+    calls.push(String(input))
+    assert.equal(new Headers(init?.headers).get('Authorization'), 'Client-ID TEST-ONLY-KEY')
+    return new Response(JSON.stringify([{ id: 'sample123' }]), { status: 200 })
+  }
+  const env = { UNSPLASH_ACCESS_KEY: 'TEST-ONLY-KEY' }
+  const ctx = { waitUntil: (p: Promise<unknown>) => stored.push(p) } as ExecutionContext
+  const url = 'https://proxy.example/photos?count=3'
+  try {
+    for (const origin of [null, 'https://example.com']) {
+      const r = await worker.fetch(new Request(url, {
+        method: 'POST', ...(origin ? { headers: { Origin: origin } } : {}),
+      }), env, ctx)
+      assert.equal(r.status, 403)
+    }
+    assert.equal(calls.length, 0, 'rejected requests must not call Unsplash')
+    const request = () => new Request(url, { method: 'POST', headers: { Origin: `chrome-extension://${EXT}` } })
+    const first = await worker.fetch(request(), env, ctx)
+    assert.equal(first.status, 200)
+    assert.equal(first.headers.get('x-proxy-cache'), 'MISS')
+    assert.equal((await first.text()).includes(env.UNSPLASH_ACCESS_KEY), false)
+    assert.equal(calls[0], buildPhotosUrl(3))
+    await Promise.all(stored)
+    const second = await worker.fetch(request(), env, ctx)
+    assert.equal(second.headers.get('x-proxy-cache'), 'HIT')
+    assert.equal(calls.length, 1, 'POST photo reads must use the same edge cache')
+  } finally {
+    globalThis.fetch = oldFetch
+    Math.random = oldRandom
+    if (oldCaches) Object.defineProperty(globalThis, 'caches', oldCaches)
+    else delete (globalThis as { caches?: unknown }).caches
+  }
+})
 
 test('parseExtensionId accepts only chrome-extension origins with a 32-char a-p id', () => {
   assert.equal(parseExtensionId(`chrome-extension://${EXT}`), EXT)

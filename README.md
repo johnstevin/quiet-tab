@@ -8,7 +8,7 @@
 
 ## 安装
 
-尚未发布到 Chrome 网上应用店；当前只支持本地加载。上架前必须解决公开包内密钥保护、API 使用合规与真机联想词故障：
+尚未发布到 Chrome 网上应用店；当前支持本地加载。Unsplash 代理已部署至 `https://quiet-tab-api.fgglog.ccwu.cc`，采用下述代理配置可生成不含 API Key 的扩展。商店上架仍需确认具体 API 用途合规、完成商店账号和目标 Chrome 联想词复验：
 
 ```bash
 npm install
@@ -225,9 +225,25 @@ quiet-tab/
 
 ## 安全：关于 Unsplash API Key
 
-**Access Key 会被打进 bundle，任何人解压扩展或打开 DevTools 都能读到。** 这是纯前端应用的固有限制，不是配置问题。`.env.local` 被 gitignore 只能防止误提交到仓库，防不住产物泄漏。
+**代理版不包含 Access Key。** 配置 `.env.local`：
 
-**当前含密钥的构建产物不得公开上架。** [Unsplash API Guidelines](https://help.unsplash.com/api-guidelines/unsplash-api-guidelines) 明确要求 Access Key 和 Secret Key 保密，客户端使用可能需要代理；对以 Unsplash 图片为主的壁纸体验还有[额外使用边界](https://help.unsplash.com/api-guidelines/guideline-replicating-unsplash)。发布前需由用户选择合规路线：取消应用内 Unsplash 集成，或在 Unsplash 确认该具体用途可行后使用安全代理并获得需要的生产配额；不能把现有本地密钥直接随扩展公开分发。
+```dotenv
+VITE_UNSPLASH_PROXY_URL=https://quiet-tab-api.fgglog.ccwu.cc
+```
+
+不要同时设置 `VITE_UNSPLASH_ACCESS_KEY`；构建会拒绝这种组合。Access Key 仅存在于 Worker Secret（本地私有参考若需保留，使用不带 `VITE_` 前缀的变量，且绝不提交）。构建会将代理的精确主机加入产物权限表，并移除不再使用的 `api.unsplash.com` 主机权限。
+
+```bash
+npm run build
+npm run verify -- --proxy=https://quiet-tab-api.fgglog.ccwu.cc
+npm run verify:ext -- --proxy=https://quiet-tab-api.fgglog.ccwu.cc
+```
+
+扩展读取图片列表使用 POST：Chrome 不给扩展 GET 请求附加 Origin，POST 则携带浏览器生成的来源，Worker 仍拒绝网页或无来源请求。图片字节继续从 Unsplash CDN 获取，署名和下载上报保持不变。
+
+**密钥保护不等于用途许可。** [Unsplash API Guidelines](https://help.unsplash.com/api-guidelines/unsplash-api-guidelines) 要求密钥保密，对壁纸体验还有[额外使用边界](https://help.unsplash.com/api-guidelines/guideline-replicating-unsplash)。公开分发前仍需确认该具体用途可行及所需配额；这里不声称已获得审核许可。
+
+个人版若配置 `VITE_UNSPLASH_ACCESS_KEY`，该密钥会被打进 bundle，任何人都能读取。此构建仅可自用，禁止公开分发。
 
 本项目**只使用 Access Key**。Unsplash 的 Secret Key 仅用于 OAuth 用户授权流程（代表用户点赞、上传等），本项目完全不需要，代码中从未出现。
 

@@ -1,4 +1,33 @@
 import { defineConfig, loadEnv } from 'vite'
+import type { Plugin } from 'vite'
+import { readFile, writeFile } from 'node:fs/promises'
+import { resolve } from 'node:path'
+
+/** Add only the configured proxy origin to the packaged host permissions. */
+function proxyManifest(mode: string): Plugin {
+  const env = loadEnv(mode, process.cwd(), 'VITE_')
+  const proxy = (env.VITE_UNSPLASH_PROXY_URL ?? '').trim()
+  let outputDir = ''
+  return {
+    name: 'quiet-tab-proxy-manifest',
+    apply: 'build',
+    configResolved(config) {
+      outputDir = resolve(config.root, config.build.outDir)
+    },
+    async closeBundle() {
+      if (!proxy) return
+      // public/ has been copied at this point. Do not change the source manifest
+      // shared with personal builds, and never grant a wildcard across all sites.
+      const path = resolve(outputDir, 'manifest.json')
+      const data = JSON.parse(await readFile(path, 'utf8'))
+      data.host_permissions = [...new Set([
+        ...data.host_permissions.filter((p: string) => p !== 'https://api.unsplash.com/*'),
+        `${new URL(proxy).origin}/*`,
+      ])]
+      await writeFile(path, JSON.stringify(data, null, 2) + '\n', 'utf8')
+    },
+  }
+}
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
@@ -42,7 +71,7 @@ function assertNoKeyLeakWithProxy(mode: string): void {
 export default defineConfig(({ mode }) => {
   assertNoKeyLeakWithProxy(mode)
   return {
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), proxyManifest(mode)],
 
   build: {
     outDir: 'dist',
