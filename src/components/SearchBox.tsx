@@ -95,8 +95,8 @@ function SuggestionIcon({ row }: { row: Suggestion }) {
       className="search__row-image"
       src={row.imageUrl}
       alt=""
-      width={32}
-      height={32}
+      width={24}
+      height={24}
       decoding="async"
       referrerPolicy="no-referrer"
       draggable={false}
@@ -457,6 +457,7 @@ export function SearchBox({ engine: engineId, keepHistory, onEngineChange }: Pro
                   className={`search__row${position === active ? ' is-active' : ''}`}
                   data-kind={row.kind}
                   data-entity={row.imageUrl || row.description ? 'yes' : 'no'}
+                  data-description={row.description ? 'yes' : 'no'}
                   onMouseEnter={() => setActive(position)}
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={() => void submit(row.text)}

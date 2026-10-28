@@ -7,8 +7,11 @@ import { chromium } from 'playwright'
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const out = join(root, '.verify')
 const dist = join(root, 'dist')
+const baseline = process.argv.includes('--baseline')
+const prefix = baseline ? 'search-density-before' : 'search-density-after'
 const context = await chromium.launchPersistentContext(await mkdtemp(join(out, 'search-live-')), {
   channel: 'chromium', headless: true, viewport: { width: 1440, height: 900 },
+  deviceScaleFactor: 1.5,
   args: [`--disable-extensions-except=${dist}`, `--load-extension=${dist}`],
 })
 const results = []
@@ -57,7 +60,30 @@ try {
   checks(`${imageCount} real entity thumbnails loaded; descriptions kept`)
   assert.deepEqual(await positions(), idle)
   checks('focus and thumbnail loading move neither clock, date nor search bar')
-  await page.screenshot({ path: join(out, 'search-10-live.png') })
+  const density = await page.evaluate(() => {
+    const drop = document.querySelector('.search__drop')
+    const rows = [...drop.querySelectorAll('.search__row')].map((row) => {
+      const r = row.getBoundingClientRect()
+      const title = row.querySelector('.search__row-title, .search__row-text')
+      const description = row.querySelector('.search__row-description')
+      const icon = row.querySelector('.search__row-glyph')
+      return { text: title.textContent, height: r.height, twoLines: Boolean(description),
+        titleSize: getComputedStyle(title).fontSize, descriptionSize: description ? getComputedStyle(description).fontSize : null,
+        textX: title.getBoundingClientRect().x, iconHeight: icon.getBoundingClientRect().height,
+        textFits: title.getBoundingClientRect().top >= r.top && (description ?? title).getBoundingClientRect().bottom <= r.bottom }
+    })
+    return { rows, scrollHeight: drop.scrollHeight, clientHeight: drop.clientHeight }
+  })
+  console.log('DENSITY', JSON.stringify(density))
+  assert.ok(density.rows.every((row) => row.textFits))
+  if (!baseline) {
+    for (const row of density.rows) assert.equal(row.height, row.twoLines ? 44 : 36, row.text)
+    assert.ok(density.rows.every((row) => row.titleSize === '14px'))
+    assert.ok(density.rows.filter((row) => row.twoLines).every((row) => row.descriptionSize === '12px'))
+    assert.ok(density.rows.every((row) => row.textX === density.rows[0].textX), 'all titles including AI align')
+    checks('ordinary/AI rows exactly 36px, two-line rows 44px; type sizes unchanged and titles aligned')
+  }
+  await page.screenshot({ path: join(out, `${prefix}-page.png`) })
   // Rendered elements, not a fake static mockup. Use a taller viewport to capture
   // all ten rows; short-screen behaviour is independently asserted below.
   await page.setViewportSize({ width: 1440, height: 1800 })
@@ -67,7 +93,7 @@ try {
     const d = document.querySelector('.search__drop').getBoundingClientRect()
     return { x: b.x, y: b.y, width: b.width, height: d.bottom - b.y }
   })
-  await page.screenshot({ path: join(out, 'search-10-panel.png'), clip: panelClip })
+  await page.screenshot({ path: join(out, `${prefix}-panel.png`), clip: panelClip })
 
   for (const viewport of [{ width: 1440, height: 900 }, { width: 1366, height: 768 }, { width: 1280, height: 720 }]) {
     await page.setViewportSize(viewport)
@@ -102,7 +128,7 @@ try {
   assert.equal(await page.locator('.search__row-image').count(), imageCount - 1)
   assert.ok(await page.locator('.search__row[data-kind]').first().locator('.search__row-glyph svg').count())
   checks('failed entity image is replaced by a type glyph, with no broken-image box')
-  await writeFile(join(out, 'search-10-report.json'), JSON.stringify({ checks: results, imageCount, titles: rendered }, null, 2))
+  await writeFile(join(out, `${prefix}-report.json`), JSON.stringify({ baseline, density, checks: results, imageCount, titles: rendered }, null, 2))
 } finally {
   await context.close()
 }
