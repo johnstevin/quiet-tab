@@ -16,6 +16,9 @@
     "build:watch": "vite build --watch",
     "icons": "node scripts/make-icons.mjs",
     "assets": "node scripts/make-icons.mjs && node scripts/make-fallback-bg.mjs && node scripts/make-date-font.mjs",
+    "test:search": "node --experimental-strip-types --test scripts/search.test.ts",
+    "verify:search": "node scripts/verify-search.mjs",
+    "verify:categories": "node scripts/verify-categories.mjs",
     "verify": "node scripts/verify-clock.mjs",
     "verify:ext": "node scripts/verify-clock.mjs --mode=extension"
   },

@@ -26,11 +26,9 @@ export type Engine = {
   /**
    * Suggestion endpoints, tried in order until one returns rows.
    *
-   * A list rather than a single URL because `client=chrome` — the variant that
-   * also reports suggestion types — is intended for Chrome's own omnibox and
-   * cannot be assumed to answer from every context. Falling through to
-   * `client=firefox` (plain strings, no types) keeps suggestions working even
-   * when the richer variant is refused.
+   * Prefer Google's web-search payload (entities and thumbnails), then the
+   * omnibox payload, then plain OpenSearch. These are undocumented endpoints,
+   * so a refusal or format change must not break ordinary search.
    */
   suggestUrls: Array<(query: string) => string>
 }
@@ -52,13 +50,11 @@ export const ENGINES: Record<EngineId, Engine> = {
     // extension cannot render AI answers itself.
     aiUrl: (q) => `https://www.google.com/search?udm=50&q=${enc(q)}`,
     suggestUrls: [
-      // Preferred: 15 candidates plus a `google:suggesttype` array, which is
-      // what lets the list show a globe for navigation hits and a magnifier
-      // for queries instead of guessing.
-      (q) => `https://suggestqueries.google.com/complete/search?client=chrome&hl=zh-CN&q=${enc(q)}`,
-      // Fallback: plain OpenSearch strings, 10 candidates, no types. Verified
-      // working independently.
-      (q) => `https://suggestqueries.google.com/complete/search?client=firefox&q=${enc(q)}`,
+      // Web-search data includes entity thumbnails/titles/descriptions and ten
+      // results. xssi=t returns JSON, not executable JSONP; oe prevents mojibake.
+      (q) => `https://suggestqueries.google.com/complete/search?client=gws-wiz&hl=zh-CN&xssi=t&oe=utf-8&q=${enc(q)}`,
+      (q) => `https://suggestqueries.google.com/complete/search?client=chrome&hl=zh-CN&oe=utf-8&q=${enc(q)}`,
+      (q) => `https://suggestqueries.google.com/complete/search?client=firefox&hl=zh-CN&oe=utf-8&q=${enc(q)}`,
     ],
   },
 
@@ -104,26 +100,35 @@ export function getEngine(id: EngineId): Engine {
 export type SuggestKind = 'history' | 'navigation' | 'query'
 
 export type Suggestion = {
+  /** Plain search term; never HTML. */
   text: string
   kind: SuggestKind
+  /** Entity title/description and thumbnail supplied by the provider. */
+  title?: string
+  description?: string
+  imageUrl?: string
 }
 
-/** Remote suggestions kept per request. */
-export const SUGGEST_LIMIT = 6
-/** Locally stored history rows shown above the remote suggestions. */
+/** Ten non-AI rows, matching Google's default web-search dropdown. */
+export const SUGGEST_LIMIT = 10
+export const TOTAL_ROWS_MAX = SUGGEST_LIMIT
+/** Local fallback rows when the input is empty or the network is unavailable. */
 export const HISTORY_LIMIT = 3
-/**
- * Hard cap on non-AI rows.
- *
- * Five, so the full list (1 AI row + up to 5 = 6 rows, ~242px) fits the ~285px
- * reserved under the search box with margin to spare — including when the
- * weather line is present, which pushes the bar 16px lower.
- *
- * The column no longer lifts on focus (see the `.stage` comment in main.css),
- * so this cap and that reserved space are two halves of one decision: raising
- * either without the other brings back a clipped list or a top-heavy page.
- */
-export const TOTAL_ROWS_MAX = 5
+
+/** Keep Google's order and all ten rows; matching history annotates, not truncates. */
+export function mergeSuggestions(remote: Suggestion[], history: string[]): Suggestion[] {
+  if (!remote.length) return history.slice(0, HISTORY_LIMIT).map((text) => ({ text, kind: 'history' }))
+  const past = new Set(history.map((text) => text.toLowerCase()))
+  const seen = new Set<string>()
+  return remote.filter((item) => {
+    const key = item.text.toLowerCase()
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  }).slice(0, TOTAL_ROWS_MAX).map((item) =>
+    past.has(item.text.toLowerCase()) ? { ...item, kind: 'history' } : item,
+  )
+}
 
 /**
  * Fetch suggestions, trying each of the engine's endpoints until one answers.
@@ -162,37 +167,72 @@ export async function fetchSuggestions(
 }
 
 async function fetchFrom(url: string, signal?: AbortSignal): Promise<Suggestion[]> {
+  const timeout = AbortSignal.timeout(5000)
   const res = await fetch(url, {
     cache: 'no-store',
-    ...(signal ? { signal } : {}),
+    signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
   })
   if (!res.ok) throw new Error(`suggest: HTTP ${res.status} <- ${url}`)
 
-  // Google and DuckDuckGo answer with `Content-Type: text/javascript`, so parse
-  // the text ourselves instead of relying on res.json() honouring it.
-  const data: unknown = JSON.parse(await res.text())
+  return parseSuggestions(await res.text())
+}
+
+/** Decode provider markup as plain text, never execute or render its HTML. */
+function plain(value: unknown): string {
+  if (typeof value !== 'string') return ''
+  return value.replace(/<[^>]*>/g, '').replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'")
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').trim()
+}
+
+/** Restrict remote thumbnails to the exact Google image hosts observed in data. */
+function thumbnail(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  try {
+    const url = new URL(value)
+    if (url.protocol !== 'https:' || url.username || url.password || url.port) return undefined
+    if (!/^encrypted-tbn[0-3]\.gstatic\.com$/.test(url.hostname)) return undefined
+    return url.href
+  } catch {
+    return undefined
+  }
+}
+
+/** Parse web-search XSSI JSON and legacy OpenSearch without evaluating scripts. */
+export function parseSuggestions(body: string): Suggestion[] {
+  const data: unknown = JSON.parse(body.replace(/^\)\]\}'\s*/, ''))
   if (!Array.isArray(data)) return []
+
+  // gws-wiz: [[ [searchTerm, type, subtypes, {zh, zi, zs}], ... ], metadata]
+  if (Array.isArray(data[0])) {
+    return data[0].flatMap((row: unknown): Suggestion[] => {
+      if (!Array.isArray(row)) return []
+      const text = plain(row[0])
+      if (!text) return []
+      const detail = row[3] && typeof row[3] === 'object' && !Array.isArray(row[3])
+        ? row[3] as Record<string, unknown> : {}
+      const description = plain(detail.zi).replace(/(?<!中国)(香港|澳门|台湾)/g, '中国$1')
+      return [{
+        text,
+        kind: asUrl(text) ? 'navigation' : 'query',
+        title: plain(detail.zh) || undefined,
+        description: description || undefined,
+        imageUrl: thumbnail(detail.zs),
+      }]
+    }).slice(0, SUGGEST_LIMIT)
+  }
 
   const texts = data[1]
   if (!Array.isArray(texts)) return []
-
-  // The metadata object is the last element, and only `client=chrome` sends one.
   const tail = data[data.length - 1]
-  const reportedTypes =
-    tail && typeof tail === 'object' && !Array.isArray(tail)
-      ? (tail as Record<string, unknown>)['google:suggesttype']
-      : undefined
+  const reportedTypes = tail && typeof tail === 'object' && !Array.isArray(tail)
+    ? (tail as Record<string, unknown>)['google:suggesttype'] : undefined
   const typeList = Array.isArray(reportedTypes) ? reportedTypes : []
-
-  return texts
-    .map((text, index): Suggestion | null => {
-      if (typeof text !== 'string' || text.length === 0) return null
-      const kind: SuggestKind =
-        typeList[index] === 'NAVIGATION' ? 'navigation' : asUrl(text) ? 'navigation' : 'query'
-      return { text, kind }
-    })
-    .filter((item): item is Suggestion => item !== null)
-    .slice(0, SUGGEST_LIMIT)
+  return texts.flatMap((value, index): Suggestion[] => {
+    const text = plain(value)
+    if (!text) return []
+    return [{ text, kind: typeList[index] === 'NAVIGATION' || asUrl(text) ? 'navigation' : 'query' }]
+  }).slice(0, SUGGEST_LIMIT)
 }
 
 /**

@@ -8,7 +8,8 @@
  * crashed the moment `wrangler dev` loaded it. Tests import from here instead.
  */
 
-const UPSTREAM = 'https://api.unsplash.com'
+import { buildCategoryPhotosUrl } from '../../src/lib/unsplashCategories.ts'
+
 const UPSTREAM_HOST = 'api.unsplash.com'
 
 /** Seconds a shared photo batch stays cached at the edge. */
@@ -67,11 +68,6 @@ export function isValidDownloadLocation(raw: string): boolean {
 }
 
 /** Build the upstream URL for a photo batch. Every parameter is fixed or clamped. */
-export function buildPhotosUrl(count: number): string {
-  const u = new URL('/photos/random', UPSTREAM)
-  u.searchParams.set('count', String(count))
-  u.searchParams.set('orientation', 'landscape')
-  u.searchParams.set('content_filter', 'high')
-  u.searchParams.set('query', FIXED_QUERY)
-  return u.toString()
+export function buildPhotosUrl(count: number, category = 'landscape', bucket = 0): string {
+  return buildCategoryPhotosUrl(count, category, bucket)
 }

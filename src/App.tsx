@@ -19,7 +19,7 @@ export default function App() {
   // before we know the stored one would waste an Unsplash rate-limit slot, and
   // asking for geolocation before we know a city is configured would pop a
   // permission prompt for nothing.
-  const wallpaper = useWallpaper(settings.source, loaded)
+  const wallpaper = useWallpaper(settings.source, loaded, settings.unsplashCategory)
   const { weather } = useWeather(settings.place, loaded && settings.showWeather)
   const { next, prev } = wallpaper
 

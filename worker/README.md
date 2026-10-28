@@ -18,7 +18,7 @@ Get Unsplash's written answer on that before distributing.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` (extension) / `GET` (explicit Origin) | `/photos?count=12` | Read a batch of landscape photos. Chrome omits Origin on extension GET requests, so the extension uses POST; both methods share the same fixed upstream and cache. |
+| `POST` (extension) / `GET` (explicit Origin) | `/photos?count=12&category=wallpapers` | Read a batch from an exact category allow-list (23 entries). Official topics use `/topics/<id>/photos`; landscape/all use `/photos/random`. No arbitrary upstream URL or query forwarding. |
 | `POST` | `/download` | Body `{"downloadLocation": "https://api.unsplash.com/photos/<id>/download"}`. Records the download, as the guidelines require. |
 | `GET` | `/health` | Liveness. Needs no origin, returns no data. |
 

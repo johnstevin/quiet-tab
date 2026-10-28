@@ -3,6 +3,7 @@ import type { SourceDescriptor } from '../lib/providers'
 import { BLUR_MAX, BLUR_MIN } from '../lib/types'
 import type { Place, Settings, SourceId } from '../lib/types'
 import { geocode, shortPlaceName } from '../lib/weather'
+import { UNSPLASH_CATEGORIES, getUnsplashCategory } from '../lib/unsplashCategories'
 
 type Props = {
   settings: Settings
@@ -53,6 +54,8 @@ export function ContextMenu({
   const ref = useRef<HTMLDivElement>(null)
 
   /* City picker, collapsed by default so the menu stays short. */
+  const [categoryOpen, setCategoryOpen] = useState(false)
+  const [categoryQuery, setCategoryQuery] = useState('')
   const [placeOpen, setPlaceOpen] = useState(false)
   const [placeQuery, setPlaceQuery] = useState('')
   const [placeResults, setPlaceResults] = useState<Place[]>([])
@@ -64,6 +67,8 @@ export function ContextMenu({
     setAnchor(null)
     setPlaced(null)
     setPlaceOpen(false)
+    setCategoryOpen(false)
+    setCategoryQuery('')
     setPlaceQuery('')
     setPlaceResults([])
     setCleared(false)
@@ -133,13 +138,25 @@ export function ContextMenu({
   // and the menu stays invisible until `placed` is set, so the correction is
   // never visible as a jump. Re-runs when the city picker expands.
   useLayoutEffect(() => {
-    if (!anchor || !ref.current) return
-    const box = ref.current.getBoundingClientRect()
-    setPlaced({
-      x: Math.max(EDGE_PADDING, Math.min(anchor.x, window.innerWidth - box.width - EDGE_PADDING)),
-      y: Math.max(EDGE_PADDING, Math.min(anchor.y, window.innerHeight - box.height - EDGE_PADDING)),
-    })
-  }, [anchor, placeOpen, placeResults.length])
+    const menu = ref.current
+    if (!anchor || !menu) return
+    const measure = () => {
+      const box = menu.getBoundingClientRect()
+      const position = {
+        x: Math.max(EDGE_PADDING, Math.min(anchor.x, window.innerWidth - box.width - EDGE_PADDING)),
+        y: Math.max(EDGE_PADDING, Math.min(anchor.y, window.innerHeight - box.height - EDGE_PADDING)),
+      }
+      setPlaced((previous) => previous?.x === position.x && previous.y === position.y ? previous : position)
+    }
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(menu)
+    window.addEventListener('resize', measure)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', measure)
+    }
+  }, [anchor, categoryOpen, categoryQuery, placeOpen, placeResults.length, error])
 
   if (!anchor) return null
 
@@ -193,6 +210,61 @@ export function ContextMenu({
         </button>
       ))}
 
+      <div className="menu__sep" />
+      <button
+        className="menu__item menu__category-toggle"
+        role="menuitem"
+        aria-expanded={categoryOpen}
+        disabled={settings.source !== 'unsplash'}
+        onClick={() => {
+          setCategoryOpen((open) => !open)
+          setPlaceOpen(false)
+        }}
+      >
+        <span className="menu__mark" />
+        <span className="menu__text">图片类型</span>
+        <span className="menu__hint">{getUnsplashCategory(settings.unsplashCategory).label}</span>
+        <span className="menu__chevron" data-open={categoryOpen ? 'yes' : 'no'}>›</span>
+      </button>
+      {categoryOpen && settings.source === 'unsplash' && (
+        <div className="menu__category-panel">
+          <input
+            className="menu__input"
+            type="search"
+            placeholder="搜索类型，如 风景 / 壁纸"
+            aria-label="搜索图片类型"
+            value={categoryQuery}
+            onChange={(event) => setCategoryQuery(event.target.value)}
+          />
+          <div className="menu__category-list" role="group" aria-label="Unsplash 图片类型">
+            {['常用', '摄影', '插画'].map((group) => {
+              const items = UNSPLASH_CATEGORIES.filter((item) => item.group === group &&
+                `${item.label} ${item.id}`.toLowerCase().includes(categoryQuery.toLowerCase().trim()))
+              if (!items.length) return null
+              return (
+                <div key={group}>
+                  <div className="menu__caption">{group}</div>
+                  {items.map((item) => (
+                    <button
+                      type="button"
+                      key={item.id}
+                      role="radio"
+                      aria-checked={settings.unsplashCategory === item.id}
+                      data-category={item.id}
+                      className="menu__category-option"
+                      onClick={act(() => onUpdate({ unsplashCategory: item.id }))}
+                    >
+                      <span className="menu__radio" data-on={settings.unsplashCategory === item.id ? 'yes' : 'no'} />
+                      <span>{item.label}</span>
+                    </button>
+                  ))}
+                </div>
+              )
+            })}
+          </div>
+          <div className="menu__category-footnote">21 个官方主题 · 2 个常用选项</div>
+        </div>
+      )}
       <div className="menu__sep" />
       <div className="menu__caption">显示</div>
 
@@ -259,7 +331,7 @@ export function ContextMenu({
         className="menu__item"
         role="menuitem"
         aria-expanded={placeOpen}
-        onClick={() => setPlaceOpen((open) => !open)}
+        onClick={() => { setPlaceOpen((open) => !open); setCategoryOpen(false) }}
       >
         <span className="menu__mark" />
         <span className="menu__text">天气位置</span>

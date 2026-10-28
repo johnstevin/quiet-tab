@@ -1,4 +1,5 @@
 /** Shared domain types. */
+import type { UnsplashCategoryId } from './unsplashCategories'
 
 export type SourceId = 'unsplash' | 'bing'
 
@@ -35,6 +36,8 @@ export type Photo = {
 
 export type Settings = {
   source: SourceId
+  /** Unsplash topic or the default landscape query. */
+  unsplashCategory: UnsplashCategoryId
   /** Background blur in CSS pixels. */
   blur: number
   /** Show the seconds group in the clock. */
@@ -61,6 +64,7 @@ export type Settings = {
 
 export const DEFAULT_SETTINGS: Settings = {
   source: 'unsplash',
+  unsplashCategory: 'landscape',
   blur: 8,
   showSeconds: true,
   showSearch: true,

@@ -344,6 +344,10 @@
   position: fixed;
   z-index: 10;
   min-width: 248px;
+  max-width: calc(100vw - 20px);
+  max-height: calc(100vh - 20px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 6px;
   border-radius: 13px;
   background: rgba(23, 26, 31, 0.82);
@@ -395,6 +399,51 @@
   font: inherit;
   text-align: left;
   cursor: pointer;
+}
+
+.menu__category-panel {
+  padding: 5px 10px 8px;
+}
+
+.menu__category-list {
+  max-height: min(250px, 28vh);
+  margin-top: 7px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.24) transparent;
+}
+
+.menu__category-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 32px;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.menu__category-option:hover,
+.menu__category-option:focus-visible {
+  background: rgba(255,255,255,0.1);
+  outline: none;
+}
+
+.menu__category-option[aria-checked='true'] {
+  background: rgba(255,255,255,0.07);
+}
+
+.menu__category-footnote {
+  padding: 8px 3px 0;
+  font-size: 10px;
+  opacity: 0.5;
 }
 
 .menu__item:hover:not(:disabled),
@@ -533,6 +582,9 @@
 }
 
 .menu__radio {
+  position: relative;
+  flex: 0 0 11px;
+  pointer-events: none;
   width: 11px;
   height: 11px;
   border: 1.5px solid rgba(255, 255, 255, 0.4);
@@ -860,11 +912,8 @@
   margin: 0;
   padding: 6px 0 8px;
   list-style: none;
-  /* Capped to the space actually left under the bar, measured in SearchBox and
-     passed in as --drop-max. A fixed value cannot work: the full nine-row list
-     clears the fold with 7px to spare at 1440x900, but would overflow a
-     768px-tall window by ~76px. The literal fallback only applies for the one
-     frame before the first measurement lands. */
+  /* Keep all ten results. Short windows scroll only this list, never move the
+     clock or search bar. The cap is the actual gap under the input. */
   max-height: var(--drop-max, 430px);
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -913,9 +962,42 @@
 
 .search__row-glyph {
   display: flex;
-  flex: 0 0 18px;
+  flex: 0 0 32px;
+  height: 32px;
+  align-items: center;
   justify-content: center;
-  color: rgba(255, 255, 255, 0.42);
+  color: rgba(255, 255, 255, 0.52);
+}
+
+.search__row-image {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  max-width: none;
+  border-radius: 6px;
+  object-fit: contain;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* The AI entry stays compact; thumbnail dimensions never affect its height. */
+.search__row--ai .search__row-glyph {
+  flex-basis: 18px;
+  height: 18px;
+}
+
+.search__row-title,
+.search__row-description {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.search__row-description {
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.35;
+  color: rgba(255, 255, 255, 0.52);
 }
 
 /* Type-specific tinting. The kinds come from real data: Google's

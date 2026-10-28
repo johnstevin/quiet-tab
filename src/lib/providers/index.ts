@@ -1,5 +1,6 @@
 import { hasUnsplashKey } from '../env'
 import type { Photo, SourceId } from '../types'
+import type { UnsplashCategoryId } from '../unsplashCategories'
 import { fetchBingPhotos } from './bing'
 import { fetchUnsplashPhotos } from './unsplash'
 
@@ -35,9 +36,10 @@ export function fetchPhotos(
   source: SourceId,
   count: number,
   signal?: AbortSignal,
+  category: UnsplashCategoryId = 'landscape',
 ): Promise<Photo[]> {
   return source === 'unsplash'
-    ? fetchUnsplashPhotos(count, signal)
+    ? fetchUnsplashPhotos(count, signal, category)
     : fetchBingPhotos(count, signal)
 }
 

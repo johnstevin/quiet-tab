@@ -20,6 +20,7 @@
  * ./lib.ts; see the comment there for why.
  */
 
+import { getUnsplashCategory } from '../../src/lib/unsplashCategories.ts'
 import {
   BATCH_BUCKETS,
   BATCH_TTL_S,
@@ -60,11 +61,12 @@ async function handlePhotos(
   cors: Record<string, string>,
 ): Promise<Response> {
   const count = clampCount(url.searchParams.get('count'))
+  const category = getUnsplashCategory(url.searchParams.get('category')).id
   // Which cache slot. Random per call so successive users see different photos
   // while still sharing at most BATCH_BUCKETS upstream fetches per TTL window.
   const bucket = Math.floor(Math.random() * BATCH_BUCKETS)
 
-  const cacheKey = new Request(`https://cache.quiet-tab.invalid/photos/${count}/${bucket}`)
+  const cacheKey = new Request(`https://cache.quiet-tab.invalid/photos/${category}/${count}/${bucket}`)
   const cache = caches.default
   const hit = await cache.match(cacheKey)
   if (hit) {
@@ -74,7 +76,7 @@ async function handlePhotos(
     return res
   }
 
-  const upstream = await fetch(buildPhotosUrl(count), {
+  const upstream = await fetch(buildPhotosUrl(count, category, bucket), {
     headers: {
       Authorization: `Client-ID ${env.UNSPLASH_ACCESS_KEY}`,
       'Accept-Version': 'v1',

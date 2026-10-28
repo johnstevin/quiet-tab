@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ENGINE_ORDER } from '../lib/search'
+import { DEFAULT_UNSPLASH_CATEGORY, isUnsplashCategory } from '../lib/unsplashCategories'
 import { getItem, setItem } from '../lib/storage'
 import { BLUR_MAX, BLUR_MIN, DEFAULT_SETTINGS } from '../lib/types'
 import type { EngineId, Place, Settings } from '../lib/types'
@@ -35,6 +36,7 @@ function sanitize(raw: Partial<Settings> | null): Settings {
 
   return {
     source: merged.source === 'bing' ? 'bing' : 'unsplash',
+    unsplashCategory: isUnsplashCategory(merged.unsplashCategory) ? merged.unsplashCategory : DEFAULT_UNSPLASH_CATEGORY,
     blur: Math.round(Math.min(BLUR_MAX, Math.max(BLUR_MIN, Number.isFinite(blur) ? blur : 0))),
     // Explicit `!== false` so a field missing from older storage defaults to on.
     showSeconds: merged.showSeconds !== false,

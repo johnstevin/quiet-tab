@@ -3,7 +3,7 @@ import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, ReactNode } fr
 import { useSuggest } from '../hooks/useSuggest'
 import { pushHistory } from '../lib/history'
 import { ENGINES, ENGINE_ORDER, asUrl, getEngine } from '../lib/search'
-import type { SuggestKind } from '../lib/search'
+import type { SuggestKind, Suggestion } from '../lib/search'
 import type { EngineId } from '../lib/types'
 
 type Props = {
@@ -81,9 +81,28 @@ function SparkleGlyph({ size = 18 }: { size?: number }) {
 }
 
 function RowGlyph({ kind }: { kind: SuggestKind }) {
-  if (kind === 'history') return <ClockGlyph size={16} />
-  if (kind === 'navigation') return <GlobeGlyph size={16} />
-  return <MagnifierGlyph size={16} />
+  if (kind === 'history') return <ClockGlyph size={18} />
+  if (kind === 'navigation') return <GlobeGlyph size={18} />
+  return <MagnifierGlyph size={18} />
+}
+
+/** Provider thumbnail, with a real type glyph if the image cannot load. */
+function SuggestionIcon({ row }: { row: Suggestion }) {
+  const [failedUrl, setFailedUrl] = useState<string | null>(null)
+  if (!row.imageUrl || failedUrl === row.imageUrl) return <RowGlyph kind={row.kind} />
+  return (
+    <img
+      className="search__row-image"
+      src={row.imageUrl}
+      alt=""
+      width={32}
+      height={32}
+      decoding="async"
+      referrerPolicy="no-referrer"
+      draggable={false}
+      onError={() => setFailedUrl(row.imageUrl ?? null)}
+    />
+  )
 }
 
 /**
@@ -164,8 +183,14 @@ export function SearchBox({ engine: engineId, keepHistory, onEngineChange }: Pro
   // highlight out of view.
   useEffect(() => {
     if (active < 0 || !dropRef.current) return
-    const elements = dropRef.current.querySelectorAll('.search__row')
-    elements[active]?.scrollIntoView({ block: 'nearest' })
+    const drop = dropRef.current
+    const element = drop.querySelectorAll<HTMLElement>('.search__row')[active]
+    if (!element) return
+    // Scroll this list only. scrollIntoView can also move ancestor containers.
+    const listBox = drop.getBoundingClientRect()
+    const rowBox = element.getBoundingClientRect()
+    if (rowBox.top < listBox.top) drop.scrollTop -= listBox.top - rowBox.top
+    else if (rowBox.bottom > listBox.bottom) drop.scrollTop += rowBox.bottom - listBox.bottom
   }, [active])
 
   /**
@@ -192,7 +217,7 @@ export function SearchBox({ engine: engineId, keepHistory, onEngineChange }: Pro
       const bar = barRef.current
       if (!bar) return
       const { bottom } = bar.getBoundingClientRect()
-      setDropMax(Math.max(140, Math.round(window.innerHeight - bottom - GAP)))
+      setDropMax(Math.max(0, Math.round(window.innerHeight - bottom - GAP)))
     }
 
     measure()
@@ -431,14 +456,18 @@ export function SearchBox({ engine: engineId, keepHistory, onEngineChange }: Pro
                   type="button"
                   className={`search__row${position === active ? ' is-active' : ''}`}
                   data-kind={row.kind}
+                  data-entity={row.imageUrl || row.description ? 'yes' : 'no'}
                   onMouseEnter={() => setActive(position)}
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={() => void submit(row.text)}
                 >
                   <span className="search__row-glyph">
-                    <RowGlyph kind={row.kind} />
+                    <SuggestionIcon row={row} />
                   </span>
-                  <span className="search__row-text">{highlight(row.text, query)}</span>
+                  <span className="search__row-text">
+                    <span className="search__row-title">{highlight(row.title ?? row.text, query)}</span>
+                    {row.description && <span className="search__row-description">{row.description}</span>}
+                  </span>
                 </button>
               </li>
             )

@@ -1,5 +1,7 @@
 import { APP_NAME, UNSPLASH_ACCESS_KEY, UNSPLASH_PROXY_URL, usesUnsplashProxy } from '../env'
 import type { Photo } from '../types'
+import { buildCategoryPhotosUrl, getUnsplashCategory } from '../unsplashCategories'
+import type { UnsplashCategoryId } from '../unsplashCategories'
 
 /**
  * Unsplash.
@@ -11,14 +13,6 @@ import type { Photo } from '../types'
  * and every download-ping counts. That is why we pull a whole batch at once and
  * cache aggressively rather than requesting one photo at a time.
  */
-
-const API = 'https://api.unsplash.com'
-
-/**
- * Subject matter. Natural landscapes match the visual design and tend to be
- * dark and low-contrast enough for white text to stay readable.
- */
-const QUERY = 'landscape,mountain,nature,forest'
 
 /**
  * Width we actually request. Unsplash originals are routinely 4000-6000px wide;
@@ -73,7 +67,7 @@ function withUtm(url: string): string {
   }
 }
 
-export async function fetchUnsplashPhotos(count: number, signal?: AbortSignal): Promise<Photo[]> {
+export async function fetchUnsplashPhotos(count: number, signal?: AbortSignal, category: UnsplashCategoryId = 'landscape'): Promise<Photo[]> {
   const clamped = Math.max(1, Math.min(count, 30))
   const viaProxy = usesUnsplashProxy()
 
@@ -84,9 +78,8 @@ export async function fetchUnsplashPhotos(count: number, signal?: AbortSignal): 
   // Proxy: the Worker fixes query/orientation/filter itself, so only `count` is
   // sent. Direct: the same parameters are built here, with the key in a header.
   const url = viaProxy
-    ? `${UNSPLASH_PROXY_URL}/photos?count=${clamped}`
-    : `${API}/photos/random?count=${clamped}` +
-      `&orientation=landscape&content_filter=high&query=${encodeURIComponent(QUERY)}`
+    ? `${UNSPLASH_PROXY_URL}/photos?count=${clamped}&category=${encodeURIComponent(category)}`
+    : buildCategoryPhotosUrl(clamped, category, Math.floor(Math.random() * 6))
 
   const res = await fetch(url, {
     // Chrome omits Origin on extension GET requests even in cors mode. POST
@@ -106,6 +99,7 @@ export async function fetchUnsplashPhotos(count: number, signal?: AbortSignal): 
         : `Unsplash 请求配额已用尽（Demo 版 50 次/小时，剩余 ${remaining ?? '0'}），稍后再试或切回 Bing`,
     )
   }
+  if (res.status === 404) throw new Error(`「${getUnsplashCategory(category).label}」暂无可用图片，请选择其他类型`)
   if (res.status === 401) throw new Error('Unsplash Access Key 无效或已被撤销')
   if (!res.ok) throw new Error(`Unsplash 接口返回 HTTP ${res.status}`)
 
@@ -145,23 +139,27 @@ export async function fetchUnsplashPhotos(count: number, signal?: AbortSignal): 
  * `pinged` bookkeeping in useWallpaper) because these calls also consume the
  * hourly rate limit.
  */
-export async function pingUnsplashDownload(downloadLocation: string): Promise<void> {
+export async function pingUnsplashDownload(downloadLocation: string): Promise<boolean> {
   try {
     if (usesUnsplashProxy()) {
       // The Worker holds the key and validates that the target really is an
       // Unsplash download endpoint, so the extension never needs to.
-      await fetch(`${UNSPLASH_PROXY_URL}/download`, {
+      const response = await fetch(`${UNSPLASH_PROXY_URL}/download`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ downloadLocation }),
         cache: 'no-store',
       })
-      return
+      if (!response.ok) return false
+      const body: unknown = await response.json()
+      return Boolean(body && typeof body === 'object' && 'ok' in body && body.ok === true)
     }
-    if (!UNSPLASH_ACCESS_KEY) return
-    await fetch(downloadLocation, { headers: authHeaders(), cache: 'no-store' })
+    if (!UNSPLASH_ACCESS_KEY) return false
+    const response = await fetch(downloadLocation, { headers: authHeaders(), cache: 'no-store' })
+    return response.ok
   } catch {
-    // Offline or blocked; nothing actionable.
+    // Failure must not be recorded as a successful report.
+    return false
   }
 }
 

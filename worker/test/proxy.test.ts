@@ -13,7 +13,30 @@ import {
 
 import worker from '../src/index.ts'
 
+import { UNSPLASH_CATEGORIES, getUnsplashCategory, wallpaperScope } from '../../src/lib/unsplashCategories.ts'
+
 const EXT = 'abcdefghijklmnopabcdefghijklmnop' // 32 chars, a-p
+
+test('all 21 official topics are present and categories are isolated', () => {
+  assert.equal(UNSPLASH_CATEGORIES.length, 23)
+  assert.equal(UNSPLASH_CATEGORIES.filter((c) => c.topic).length, 21)
+  assert.equal(new Set(UNSPLASH_CATEGORIES.map((c) => c.id)).size, 23)
+  for (const c of UNSPLASH_CATEGORIES) {
+    const url = new URL(buildPhotosUrl(12, c.id, 3))
+    assert.equal(url.origin, 'https://api.unsplash.com')
+    if (c.topic) {
+      assert.equal(url.pathname, `/topics/${c.topic}/photos`)
+      assert.equal(url.searchParams.get('page'), '4')
+      assert.equal(url.searchParams.get('per_page'), '12')
+      assert.equal(url.searchParams.has('query'), false)
+    } else assert.equal(url.pathname, '/photos/random')
+  }
+  assert.equal(new URL(buildPhotosUrl(12, 'all')).searchParams.has('query'), false)
+  assert.equal(getUnsplashCategory('https://evil.example').id, 'landscape')
+  assert.equal(wallpaperScope('unsplash', 'landscape'), 'unsplash')
+  assert.equal(wallpaperScope('unsplash', 'wallpapers'), 'unsplash:wallpapers')
+  assert.equal(wallpaperScope('bing', 'wallpapers'), 'bing')
+})
 
 test('photo POST requires Origin and shares the fixed upstream and edge cache', async () => {
   const oldFetch = globalThis.fetch
@@ -56,6 +79,12 @@ test('photo POST requires Origin and shares the fixed upstream and edge cache', 
     const second = await worker.fetch(request(), env, ctx)
     assert.equal(second.headers.get('x-proxy-cache'), 'HIT')
     assert.equal(calls.length, 1, 'POST photo reads must use the same edge cache')
+    const different = await worker.fetch(new Request(url + '&category=wallpapers', {
+      method: 'POST', headers: { Origin: `chrome-extension://${EXT}` },
+    }), env, ctx)
+    assert.equal(different.headers.get('x-proxy-cache'), 'MISS')
+    assert.equal(calls.length, 2, 'another category must not reuse the landscape batch')
+    assert.ok(calls[1]?.includes('/topics/bo8jQKTaE0Y/photos'))
   } finally {
     globalThis.fetch = oldFetch
     Math.random = oldRandom

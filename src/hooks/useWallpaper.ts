@@ -6,260 +6,186 @@ import { pingUnsplashDownload } from '../lib/providers/unsplash'
 import { getItem, setItem } from '../lib/storage'
 import { snapshot } from '../lib/time'
 import type { Photo, Pool, SourceId } from '../lib/types'
+import { wallpaperScope } from '../lib/unsplashCategories'
+import type { UnsplashCategoryId } from '../lib/unsplashCategories'
 
 const KEY_PINGED = 'pingedPhotoIds'
-const keyPool = (s: SourceId) => `pool:${s}`
-const keyIndex = (s: SourceId) => `index:${s}`
+const keyPool = (s: SourceId, c: UnsplashCategoryId) => `pool:${wallpaperScope(s, c)}`
+const keyIndex = (s: SourceId, c: UnsplashCategoryId) => `index:${wallpaperScope(s, c)}`
 
 export type WallpaperApi = {
-  /** The photo currently on screen, or null while on the bundled fallback. */
   photo: Photo | null
-  /** URL fed to the top background layer. */
   src: string
-  /** True once a real photo has faded in. */
   ready: boolean
-  /** A fetch or decode is in flight. */
   busy: boolean
-  /** Human-readable failure, surfaced in the context menu. */
   error: string | null
   next: () => void
   prev: () => void
 }
 
-function describe(err: unknown): string {
-  return err instanceof Error ? err.message : String(err)
-}
-
-/**
- * Force a full decode before the image reaches the DOM.
- *
- * Attaching a multi-megapixel JPEG and letting the browser decode during paint
- * costs a long frame. Decoding first makes the swap instantaneous, with no
- * blank frame between the old and new photo.
- */
-async function decodeImage(src: string): Promise<void> {
-  const img = new Image()
-  img.src = src
-  try {
-    await img.decode()
-  } catch {
-    // Rejects on a broken or aborted image; the <img> element will cope.
-  }
-}
+type Operation = { id: number; scope: string }
+const describe = (err: unknown) => err instanceof Error ? err.message : String(err)
 
 function dedupe(photos: Photo[]): Photo[] {
   const seen = new Set<string>()
   return photos.filter((p) => (seen.has(p.id) ? false : (seen.add(p.id), true)))
 }
 
-/**
- * Wallpaper pipeline: photo pool, navigation, byte caching.
- *
- * @param preferredSource the source from settings; falls back automatically
- *        when it is unusable (e.g. Unsplash with no API key)
- * @param enabled hold off until settings have loaded, so we never fetch
- *        against the default source and then discard it
- *
- * Deliberate behaviours:
- *  - The bundled wallpaper is on screen from the first frame; a real photo only
- *    ever fades in on top. No loading spinner, no error screen — a new tab that
- *    flashes either is worse than one showing a static photo.
- *  - Photos arrive in batches and are cached as bytes, so prev/next inside the
- *    current pool is instant and works offline.
- *  - Every async path is guarded by a sequence number, so hammering "next"
- *    cannot let a slow earlier download overwrite a newer one.
- */
-export function useWallpaper(preferredSource: SourceId, enabled: boolean): WallpaperApi {
+/** Category-scoped batches; only the current operation may change screen state. */
+export function useWallpaper(preferredSource: SourceId, enabled: boolean, category: UnsplashCategoryId = 'landscape'): WallpaperApi {
   const [pool, setPool] = useState<Photo[]>([])
   const [index, setIndex] = useState(0)
-  const [src, setSrc] = useState<string>(FALLBACK_IMAGE)
+  const [photo, setPhoto] = useState<Photo | null>(null)
+  const [src, setSrc] = useState(FALLBACK_IMAGE)
   const [ready, setReady] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-
   const objectUrlRef = useRef<string | null>(null)
   const aliveRef = useRef(true)
-  const revealedRef = useRef(false)
-  /** Incremented on every navigation; stale async work checks it and bails. */
-  const seqRef = useRef(0)
+  const busyRef = useRef(false)
+  const operationRef = useRef(0)
+  const poolScopeRef = useRef<string | null>(null)
+  const desiredScope = wallpaperScope(resolveSource(preferredSource), category)
+  const desiredScopeRef = useRef(desiredScope)
+  if (desiredScopeRef.current !== desiredScope) {
+    desiredScopeRef.current = desiredScope
+    operationRef.current += 1
+  }
 
-  /** Report a first-time use to Unsplash, at most once per photo. */
-  const pingOnce = useCallback(async (photo: Photo) => {
-    if (!photo.downloadLocation) return
+  const current = useCallback((op: Operation) =>
+    aliveRef.current && op.id === operationRef.current && op.scope === desiredScopeRef.current, [])
+
+  const begin = useCallback((scope: string): Operation => {
+    const op = { id: ++operationRef.current, scope }
+    busyRef.current = true
+    setBusy(true)
+    setError(null)
+    return op
+  }, [])
+
+  const finish = useCallback((op: Operation) => {
+    if (!current(op)) return
+    busyRef.current = false
+    setBusy(false)
+  }, [current])
+
+  const pingOnce = useCallback(async (item: Photo) => {
+    if (!item.downloadLocation) return
     const pinged = (await getItem<string[]>(KEY_PINGED)) ?? []
-    if (pinged.includes(photo.id)) return
-    await pingUnsplashDownload(photo.downloadLocation)
-    // Bounded so the list cannot grow without limit.
-    await setItem(KEY_PINGED, [...pinged.slice(-200), photo.id])
-  }, [])
-
-  const show = useCallback(
-    async (photo: Photo) => {
-      const seq = ++seqRef.current
-      setBusy(true)
-      try {
-        let url = await getCachedBlobUrl(photo.url)
-        if (!url) {
-          url = await cacheImage(photo.url)
-          // Only ping on a real download, not on a cache hit.
-          void pingOnce(photo)
-        }
-
-        const stale = () => seq !== seqRef.current || !aliveRef.current
-        if (stale()) {
-          URL.revokeObjectURL(url)
-          return
-        }
-
-        await decodeImage(url)
-        if (stale()) {
-          URL.revokeObjectURL(url)
-          return
-        }
-
-        const previous = objectUrlRef.current
-        objectUrlRef.current = url
-        setSrc(url)
-        setError(null)
-
-        // Fade in only the first time. Later swaps are instantaneous because
-        // the bytes are already decoded — toggling opacity again would flash
-        // the fallback layer underneath.
-        if (!revealedRef.current) {
-          revealedRef.current = true
-          requestAnimationFrame(() => {
-            if (aliveRef.current) setReady(true)
-          })
-        }
-
-        // Release the old blob once the cross-fade can no longer reference it.
-        if (previous) window.setTimeout(() => URL.revokeObjectURL(previous), 1200)
-      } catch (err) {
-        if (seq === seqRef.current && aliveRef.current) setError(describe(err))
-      } finally {
-        if (seq === seqRef.current && aliveRef.current) setBusy(false)
-      }
-    },
-    [pingOnce],
-  )
-
-  /**
-   * Guarantee the pool for `source` holds at least `want` photos, fetching a
-   * batch if not. Existing entries are preserved so stepping backwards still
-   * works after a refill.
-   */
-  const ensurePool = useCallback(async (source: SourceId, want: number): Promise<Photo[]> => {
-    const today = snapshot().dayKey
-    const cached = await getItem<Pool>(keyPool(source))
-
-    if (cached && cached.dayKey === today && cached.photos.length >= want) {
-      return cached.photos
+    if (pinged.includes(item.id)) return
+    if (await pingUnsplashDownload(item.downloadLocation)) {
+      await setItem(KEY_PINGED, [...pinged.slice(-200), item.id])
     }
-
-    const existing = cached?.dayKey === today ? cached.photos : []
-    const fresh = await fetchPhotos(source, batchSize(source))
-    const merged = dedupe([...existing, ...fresh])
-
-    await setItem<Pool>(keyPool(source), {
-      photos: merged,
-      dayKey: today,
-      fetchedAt: Date.now(),
-    })
-    void pruneCache(merged.map((p) => p.url))
-
-    return merged
   }, [])
 
-  const go = useCallback(
-    (delta: number) => {
-      void (async () => {
-        const source = resolveSource(preferredSource)
+  /** Keep the prior image and its credit until the replacement really decodes. */
+  const show = useCallback(async (item: Photo, op: Operation): Promise<boolean> => {
+    let candidate: string | null = null
+    let committed = false
+    try {
+      candidate = await getCachedBlobUrl(item.url)
+      const downloaded = !candidate
+      if (!candidate) candidate = await cacheImage(item.url)
+      if (!current(op)) return false
+      const img = new Image()
+      img.src = candidate
+      await img.decode()
+      if (!current(op)) return false
+      const previous = objectUrlRef.current
+      objectUrlRef.current = candidate
+      setSrc(candidate)
+      setPhoto(item)
+      setReady(true)
+      setError(null)
+      committed = true
+      if (downloaded) void pingOnce(item)
+      if (previous) window.setTimeout(() => URL.revokeObjectURL(previous), 1200)
+      return true
+    } finally {
+      if (candidate && !committed) URL.revokeObjectURL(candidate)
+    }
+  }, [current, pingOnce])
+
+  /** Prevent even same-category A-B-A late requests from overwriting the pool. */
+  const ensurePool = useCallback(async (source: SourceId, want: number, op: Operation): Promise<Photo[]> => {
+    const today = snapshot().dayKey
+    const cached = await getItem<Pool>(keyPool(source, category))
+    if (!current(op)) return []
+    if (cached?.dayKey === today && cached.photos.length >= want) return cached.photos
+    const existing = cached?.dayKey === today ? cached.photos : []
+    const fresh = await fetchPhotos(source, batchSize(source), undefined, category)
+    if (!current(op)) return []
+    const merged = dedupe([...existing, ...fresh])
+    await setItem<Pool>(keyPool(source, category), { photos: merged, dayKey: today, fetchedAt: Date.now() })
+    if (current(op)) void pruneCache(merged.map((p) => p.url))
+    return merged
+  }, [category, current])
+
+  const go = useCallback((delta: number) => {
+    const source = resolveSource(preferredSource)
+    const scope = wallpaperScope(source, category)
+    if (busyRef.current || poolScopeRef.current !== scope || !enabled) return
+    const op = begin(scope)
+    void (async () => {
+      try {
         let list = pool
         let target = index + delta
-
-        if (target < 0) {
-          // Wrap to the end rather than dead-ending at the first photo.
-          target = Math.max(0, list.length - 1)
-        }
-
+        if (target < 0) target = Math.max(0, list.length - 1)
         if (target >= list.length) {
-          try {
-            const grown = await ensurePool(source, target + 1)
-            if (grown.length > list.length) {
-              list = grown
-              setPool(grown)
-            }
-          } catch (err) {
-            setError(describe(err))
-          }
-          // Bing only ever exposes 8 days, so a refill cannot grow the pool.
-          // Wrap instead of leaving the user stuck.
+          list = await ensurePool(source, target + 1, op)
+          if (!current(op)) return
           if (target >= list.length) target = 0
         }
-
-        const photo = list[target]
-        if (!photo) return
-
-        setIndex(target)
-        void setItem(keyIndex(source), target)
-        await show(photo)
-      })()
-    },
-    [index, pool, preferredSource, ensurePool, show],
-  )
-
+        const item = list[target]
+        if (!item || !current(op)) return
+        if (await show(item, op)) {
+          setPool(list)
+          setIndex(target)
+          await setItem(keyIndex(source, category), target)
+        }
+      } catch (err) {
+        if (current(op)) setError(describe(err))
+      } finally {
+        finish(op)
+      }
+    })()
+  }, [preferredSource, category, enabled, pool, index, begin, current, ensurePool, show, finish])
   const next = useCallback(() => go(1), [go])
   const prev = useCallback(() => go(-1), [go])
 
-  // Load (or reload, when the source changes) the pool and show a photo.
   useEffect(() => {
     aliveRef.current = true
-    if (!enabled) return
-
-    // Dev server: no cross-origin fetch (CORS), so keep the bundled wallpaper.
-    // See lib/env.ts for the rationale.
-    if (!isExtensionRuntime()) return
-
+    if (!enabled || !isExtensionRuntime()) return
     const source = resolveSource(preferredSource)
-
+    const scope = wallpaperScope(source, category)
+    const op = begin(scope)
     void (async () => {
-      setError(null)
-      setBusy(true)
       try {
-        const list = await ensurePool(source, 1)
-        if (!aliveRef.current) return
-        setPool(list)
-
-        const savedIndex = (await getItem<number>(keyIndex(source))) ?? 0
-        const i = Math.min(Math.max(0, savedIndex), list.length - 1)
-        setIndex(i)
-
-        const photo = list[i]
-        if (photo) await show(photo)
+        const list = await ensurePool(source, 1, op)
+        if (!current(op)) return
+        const saved = (await getItem<number>(keyIndex(source, category))) ?? 0
+        if (!current(op)) return
+        const target = Math.min(Math.max(0, saved), Math.max(0, list.length - 1))
+        const item = list[target]
+        if (item && await show(item, op)) {
+          poolScopeRef.current = scope
+          setPool(list)
+          setIndex(target)
+        }
       } catch (err) {
-        if (aliveRef.current) setError(describe(err))
+        if (current(op)) setError(describe(err))
       } finally {
-        if (aliveRef.current) setBusy(false)
+        finish(op)
       }
     })()
-  }, [preferredSource, enabled, ensurePool, show])
+    return () => { operationRef.current += 1 }
+  }, [preferredSource, category, enabled, begin, current, ensurePool, show, finish])
 
-  // Release the live blob URL on unmount.
-  useEffect(
-    () => () => {
-      aliveRef.current = false
-      if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current)
-    },
-    [],
-  )
+  useEffect(() => () => {
+    aliveRef.current = false
+    operationRef.current += 1
+    if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current)
+  }, [])
 
-  return {
-    photo: pool[index] ?? null,
-    src,
-    ready,
-    busy,
-    error,
-    next,
-    prev,
-  }
+  return { photo, src, ready, busy, error, next, prev }
 }
