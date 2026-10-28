@@ -6,7 +6,7 @@
   "workers_dev": true,
   "routes": [
     {
-      "pattern": "quiet-tab-api.fgglog.ccwu.cc",
+      "pattern": "quiet-tab.ccwu.cc",
       "custom_domain": true
     }
   ],

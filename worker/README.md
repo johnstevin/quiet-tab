@@ -64,9 +64,12 @@ npx wrangler secret put UNSPLASH_ACCESS_KEY     # paste the ACCESS key, never th
 npx wrangler deploy
 ```
 
-This deployment uses **https://quiet-tab-api.fgglog.ccwu.cc**. The configuration
-adds that exact hostname as a Custom Domain, without changing the zone's apex
-homepage or other Workers. Cloudflare manages its DNS record and TLS certificate.
+The current endpoint is **https://quiet-tab.ccwu.cc**. The domain is registered
+at DNSHE and delegates to `dora.ns.cloudflare.com` and `tim.ns.cloudflare.com`.
+Cloudflare hosts the Free zone and binds the exact hostname to this Worker;
+it manages the application DNS record and TLS certificate. The only Custom
+Domain configured in `wrangler.jsonc` is `quiet-tab.ccwu.cc`; all extension builds
+and examples use this endpoint.
 `GET /health` should return `{"ok":true}`. Requests to the other endpoints without
 an extension Origin intentionally return 403.
 
@@ -74,7 +77,7 @@ Then build the extension against it, with **no** Access Key in the environment:
 
 ```bash
 # .env.local
-VITE_UNSPLASH_PROXY_URL=https://quiet-tab-api.fgglog.ccwu.cc
+VITE_UNSPLASH_PROXY_URL=https://quiet-tab.ccwu.cc
 # VITE_UNSPLASH_ACCESS_KEY must be empty or absent
 npm run build
 ```

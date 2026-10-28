@@ -22,7 +22,9 @@
 
 这是开发者模式的手动安装，不是 Chrome 网上应用店安装。**不能直接导入 ZIP，不提供 CRX 一键安装，也不会自动更新。** 下载新版本后替换同一解压目录内的文件，在扩展卡片点击刷新，再关闭旧标签页并打开新标签页。保持安装目录不变通常可保留该扩展的 ID 和本地设置。
 
-Release 只包含 `dist` 运行文件，不含源码、`.env.local`、Worker 密钥、浏览器配置或依赖目录；Unsplash 通过已部署的 `https://quiet-tab-api.fgglog.ccwu.cc` 代理访问。远程图源与非公开搜索联想服务的可用性取决于网络、上游接口及配额，GitHub Release 不代表任何商店或 Unsplash 官方审核通过。
+Release 只包含 `dist` 运行文件，不含源码、`.env.local`、Worker 密钥、浏览器配置或依赖目录；Unsplash 通过已部署的 `https://quiet-tab.ccwu.cc` 代理访问。远程图源与非公开搜索联想服务的可用性取决于网络、上游接口及配额，GitHub Release 不代表任何商店或 Unsplash 官方审核通过。
+
+**服务域名**：仅使用 `https://quiet-tab.ccwu.cc`。域名在 DNSHE 注册，NS 委派至 Cloudflare 托管。安装当前 Release 后若 Chrome 提示网站访问权限，按提示确认。
 
 **当前限制**：Unsplash Demo 配额为 50 次/小时，所有用户和验证请求共享。配额耗尽时不能拉取新图片或完成下载上报，已缓存图片仍可用；可在右键菜单选择「Bing 每日」临时替代。上报失败不会写成上报成功，本版不承诺自动重试历史失败上报。
 
@@ -256,15 +258,15 @@ quiet-tab/
 **代理版不包含 Access Key。** 配置 `.env.local`：
 
 ```dotenv
-VITE_UNSPLASH_PROXY_URL=https://quiet-tab-api.fgglog.ccwu.cc
+VITE_UNSPLASH_PROXY_URL=https://quiet-tab.ccwu.cc
 ```
 
 不要同时设置 `VITE_UNSPLASH_ACCESS_KEY`；构建会拒绝这种组合。Access Key 仅存在于 Worker Secret（本地私有参考若需保留，使用不带 `VITE_` 前缀的变量，且绝不提交）。构建会将代理的精确主机加入产物权限表，并移除不再使用的 `api.unsplash.com` 主机权限。
 
 ```bash
 npm run build
-npm run verify -- --proxy=https://quiet-tab-api.fgglog.ccwu.cc
-npm run verify:ext -- --proxy=https://quiet-tab-api.fgglog.ccwu.cc
+npm run verify -- --proxy=https://quiet-tab.ccwu.cc
+npm run verify:ext -- --proxy=https://quiet-tab.ccwu.cc
 ```
 
 扩展读取图片列表使用 POST：Chrome 不给扩展 GET 请求附加 Origin，POST 则携带浏览器生成的来源，Worker 仍拒绝网页或无来源请求。图片字节继续从 Unsplash CDN 获取，署名和下载上报保持不变。

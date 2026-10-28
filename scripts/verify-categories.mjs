@@ -6,7 +6,7 @@ import { chromium } from 'playwright'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const out = join(root, '.verify')
-const base = 'https://quiet-tab-api.fgglog.ccwu.cc'
+const base = 'https://quiet-tab.ccwu.cc'
 const context = await chromium.launchPersistentContext(await mkdtemp(join(out, 'category-live-')), {
   channel: 'chromium', headless: true, viewport: { width: 1440, height: 900 },
   args: [`--disable-extensions-except=${root}/dist`, `--load-extension=${root}/dist`],
